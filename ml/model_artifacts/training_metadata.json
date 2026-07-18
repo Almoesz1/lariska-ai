@@ -1,0 +1,103 @@
+{
+  "model_name": "LGBMClassifier",
+  "library": "lightgbm",
+  "dataset_rows": 5000,
+  "train_size": 4000,
+  "test_size": 1000,
+  "training_time_seconds": 2.3748,
+  "timestamp": "2026-07-18T17:38:32.099131+00:00",
+  "random_state": 42,
+  "test_split_ratio": 0.2,
+  "feature_names": [
+    "margin_pct",
+    "stock_ratio",
+    "customer_loyalty",
+    "discount_requested_pct",
+    "hour_of_day",
+    "is_peak_hour"
+  ],
+  "label_mapping": {
+    "bonus": 0,
+    "counter_offer": 1,
+    "discount": 2,
+    "hold_price": 3
+  },
+  "accuracy": 0.892,
+  "precision_macro": 0.8912,
+  "recall_macro": 0.8051,
+  "f1_macro": 0.832,
+  "classification_report": {
+    "bonus": {
+      "precision": 0.8857142857142857,
+      "recall": 0.4696969696969697,
+      "f1-score": 0.6138613861386139,
+      "support": 66.0
+    },
+    "counter_offer": {
+      "precision": 0.9230769230769231,
+      "recall": 0.9333333333333333,
+      "f1-score": 0.9281767955801105,
+      "support": 270.0
+    },
+    "discount": {
+      "precision": 0.8713692946058091,
+      "recall": 0.8786610878661087,
+      "f1-score": 0.875,
+      "support": 239.0
+    },
+    "hold_price": {
+      "precision": 0.88470066518847,
+      "recall": 0.9388235294117647,
+      "f1-score": 0.910958904109589,
+      "support": 425.0
+    },
+    "accuracy": 0.892,
+    "macro avg": {
+      "precision": 0.8912152921463721,
+      "recall": 0.8051287300770441,
+      "f1-score": 0.8319992714570783,
+      "support": 1000.0
+    },
+    "weighted avg": {
+      "precision": 0.8919429562038003,
+      "recall": 0.892,
+      "f1-score": 0.8874051205383536,
+      "support": 1000.0
+    }
+  },
+  "confusion_matrix": [
+    [
+      31,
+      5,
+      16,
+      14
+    ],
+    [
+      0,
+      252,
+      1,
+      17
+    ],
+    [
+      3,
+      5,
+      210,
+      21
+    ],
+    [
+      1,
+      11,
+      14,
+      399
+    ]
+  ],
+  "feature_importance": {
+    "discount_requested_pct": 0.2489,
+    "margin_pct": 0.2325,
+    "stock_ratio": 0.2167,
+    "customer_loyalty": 0.1968,
+    "hour_of_day": 0.0879,
+    "is_peak_hour": 0.0173
+  },
+  "note": "Dilatih dari data SINTETIS berbasis heuristik bisnis (lihat generate_synthetic_data.py), bukan data transaksi riil UMKM. Roadmap: retrain berkala dari negotiation_logs asli setelah data produksi terkumpul cukup banyak."
+}
