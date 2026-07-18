@@ -1,0 +1,5 @@
+pandas>=2.0        # manipulasi tabel data (fitur negosiasi, dataset)
+numpy>=1.26         # operasi numerik & random number generator untuk data sintetis
+scikit-learn>=1.4    # train_test_split, LabelEncoder, metrics evaluasi (accuracy/precision/recall/F1)
+lightgbm>=4.3         # model utama (gradient boosting, ringan & cepat dilatih)
+joblib>=1.3            # serialisasi model ke .pkl (lebih efisien dari pickle biasa untuk objek sklearn)
