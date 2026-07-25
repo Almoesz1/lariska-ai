@@ -14,7 +14,8 @@ dibayar, bukan saat order pertama kali dibuat.
 from datetime import datetime, timezone
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, status, Depends
+from supabase import Client
 
 from app.schemas import (
     CustomerCreate,
@@ -44,8 +45,7 @@ ORDER_COLUMNS = "id, customer_id, conversation_id, product_id, quantity, unit_pr
 # ============================================================
 
 @router.get("/products", response_model=list[ProductResponse])
-def list_products():
-    supabase = get_supabase()
+def list_products(supabase: Client = Depends(get_supabase)):
     res = (
         supabase.table("products")
         .select(PRODUCT_COLUMNS)
@@ -57,8 +57,7 @@ def list_products():
 
 
 @router.get("/products/{product_id}", response_model=ProductResponse)
-def get_product(product_id: UUID):
-    supabase = get_supabase()
+def get_product(product_id: UUID, supabase: Client = Depends(get_supabase)):
     res = (
         supabase.table("products")
         .select(PRODUCT_COLUMNS)
@@ -73,19 +72,18 @@ def get_product(product_id: UUID):
 
 
 @router.post("/products", response_model=ProductResponse, status_code=status.HTTP_201_CREATED)
-def create_product(payload: ProductCreate):
+def create_product(payload: ProductCreate, supabase: Client = Depends(get_supabase)):
     if payload.floor_price > payload.price:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="floor_price tidak boleh lebih besar dari price",
         )
-    supabase = get_supabase()
     res = supabase.table("products").insert(payload.model_dump(mode="json")).execute()
     return res.data[0]
 
 
 @router.put("/products/{product_id}", response_model=ProductResponse)
-def update_product(product_id: UUID, payload: ProductUpdate):
+def update_product(product_id: UUID, payload: ProductUpdate, supabase: Client = Depends(get_supabase)):
     data = payload.model_dump(exclude_none=True, mode="json")
     if not data:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No fields to update")
@@ -96,7 +94,6 @@ def update_product(product_id: UUID, payload: ProductUpdate):
             detail="floor_price tidak boleh lebih besar dari price",
         )
 
-    supabase = get_supabase()
     res = supabase.table("products").update(data).eq("id", str(product_id)).execute()
     if not res.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
@@ -104,9 +101,8 @@ def update_product(product_id: UUID, payload: ProductUpdate):
 
 
 @router.delete("/products/{product_id}", status_code=status.HTTP_204_NO_CONTENT)
-def soft_delete_product(product_id: UUID):
+def soft_delete_product(product_id: UUID, supabase: Client = Depends(get_supabase)):
     """Soft delete — set deleted_at, konsisten dengan schema.sql Sprint 2A."""
-    supabase = get_supabase()
     res = (
         supabase.table("products")
         .update({"deleted_at": datetime.now(timezone.utc).isoformat()})
@@ -123,8 +119,7 @@ def soft_delete_product(product_id: UUID):
 # ============================================================
 
 @router.get("/customers", response_model=list[CustomerResponse])
-def list_customers():
-    supabase = get_supabase()
+def list_customers(supabase: Client = Depends(get_supabase)):
     res = (
         supabase.table("customers")
         .select(CUSTOMER_COLUMNS)
@@ -136,8 +131,7 @@ def list_customers():
 
 
 @router.get("/customers/{customer_id}", response_model=CustomerResponse)
-def get_customer(customer_id: UUID):
-    supabase = get_supabase()
+def get_customer(customer_id: UUID, supabase: Client = Depends(get_supabase)):
     res = (
         supabase.table("customers")
         .select(CUSTOMER_COLUMNS)
@@ -152,8 +146,7 @@ def get_customer(customer_id: UUID):
 
 
 @router.post("/customers", response_model=CustomerResponse, status_code=status.HTTP_201_CREATED)
-def create_customer(payload: CustomerCreate):
-    supabase = get_supabase()
+def create_customer(payload: CustomerCreate, supabase: Client = Depends(get_supabase)):
     try:
         res = supabase.table("customers").insert(payload.model_dump(mode="json")).execute()
     except Exception as exc:
@@ -171,15 +164,13 @@ def create_customer(payload: CustomerCreate):
 # ============================================================
 
 @router.get("/orders", response_model=list[OrderResponse])
-def list_orders():
-    supabase = get_supabase()
+def list_orders(supabase: Client = Depends(get_supabase)):
     res = supabase.table("orders").select(ORDER_COLUMNS).order("created_at", desc=True).execute()
     return res.data
 
 
 @router.get("/orders/{order_id}", response_model=OrderResponse)
-def get_order(order_id: UUID):
-    supabase = get_supabase()
+def get_order(order_id: UUID, supabase: Client = Depends(get_supabase)):
     res = supabase.table("orders").select(ORDER_COLUMNS).eq("id", str(order_id)).maybe_single().execute()
     if not res.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
@@ -187,13 +178,11 @@ def get_order(order_id: UUID):
 
 
 @router.post("/orders", response_model=OrderResponse, status_code=status.HTTP_201_CREATED)
-def create_order(payload: OrderCreate):
+def create_order(payload: OrderCreate, supabase: Client = Depends(get_supabase)):
     """
     unit_price diambil dari products.price saat ini (BUKAN dari client) —
     mencegah price tampering, sesuai desain OrderCreate di schemas/order.py.
     """
-    supabase = get_supabase()
-
     product_res = (
         supabase.table("products")
         .select("id, price, floor_price, is_active")
@@ -258,8 +247,7 @@ def create_order(payload: OrderCreate):
 
 
 @router.put("/orders/{order_id}", response_model=OrderResponse)
-def update_order_status(order_id: UUID, payload: OrderUpdate):
-    supabase = get_supabase()
+def update_order_status(order_id: UUID, payload: OrderUpdate, supabase: Client = Depends(get_supabase)):
     res = (
         supabase.table("orders")
         .update({"status": payload.status})

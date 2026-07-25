@@ -21,6 +21,3 @@ def get_supabase() -> Client:
         settings.supabase_url,
         settings.supabase_service_role_key,
     )
-
-
-supabase = get_supabase()
