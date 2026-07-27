@@ -3,11 +3,12 @@
 import React, { useEffect, useRef } from 'react';
 import { gsap } from 'gsap';
 import { TextPlugin } from 'gsap/TextPlugin';
+import { ScrollTrigger } from 'gsap/ScrollTrigger';
 import { Play, ArrowRight, MessageSquare, Bot, Zap, Brain, Mic, CheckCircle2, ChevronDown } from 'lucide-react';
 import Link from 'next/link';
 
 if (typeof window !== "undefined") {
-  gsap.registerPlugin(TextPlugin);
+  gsap.registerPlugin(TextPlugin, ScrollTrigger);
 }
 
 export default function LandingPage() {
@@ -81,14 +82,14 @@ export default function LandingPage() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-[#F8F9FF] font-sans text-slate-900 relative overflow-hidden">
+    <div className="min-h-screen bg-[#F8F9FF] font-sans text-slate-900 relative overflow-x-clip">
       {/* Background gradients */}
       <div className="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] rounded-full bg-purple-300/30 blur-[120px]" />
       <div className="absolute top-[20%] right-[-10%] w-[60%] h-[60%] rounded-full bg-indigo-300/20 blur-[120px]" />
       <div className="absolute bottom-[-10%] left-[20%] w-[50%] h-[50%] rounded-full bg-blue-300/20 blur-[120px]" />
 
       {/* Navbar */}
-      <nav className="relative z-10 flex items-center justify-between px-8 py-6 max-w-7xl mx-auto">
+      <nav className="sticky top-0 z-50 flex items-center justify-between px-8 py-6 max-w-7xl mx-auto">
         <div className="flex items-center gap-2">
           <Bot className="w-8 h-8 text-indigo-600" />
           <span className="text-2xl font-bold tracking-tight text-indigo-950">LARISKA<span className="text-indigo-600">.</span></span>
