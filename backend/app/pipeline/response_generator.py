@@ -18,10 +18,9 @@ Referensi proposal Bab 4, Tahap 6: LLM Response Generation
 import logging
 from typing import Optional
 
-from google import genai
 from google.genai import types
 
-from app.core.config import settings
+from app.pipeline.gemini_client import generate_content
 from app.schemas.pipeline import (
     ConversationContext,
     EmotionResult,
@@ -34,24 +33,6 @@ from app.schemas.pipeline import (
 )
 
 logger = logging.getLogger(__name__)
-
-# Gunakan Gemini Client (Singleton di module level)
-_response_client = None
-
-
-def _get_response_client():
-    global _response_client
-    if _response_client is not None:
-        return _response_client
-
-    api_key = settings.get_effective_google_api_key()
-    if not api_key:
-        raise RuntimeError("API key Gemini tidak ditemukan di .env (set GOOGLE_API_KEY atau LLM_API_KEY).")
-
-    # Inisialisasi client menggunakan SDK google-genai terbaru
-    _response_client = genai.Client(api_key=api_key)
-    return _response_client
-
 
 # ============================================================
 # System Prompt Template
@@ -180,8 +161,6 @@ def generate_response(
     Returns:
         Teks balasan yang siap dikirim ke WhatsApp.
     """
-    client = _get_response_client()
-
     prompt = _SYSTEM_TEMPLATE.format(
         shop_name="Toko Kami",  # Bisa dikonfigurasi dari settings nanti
         business_decision=_format_business_decision(scoring_decision, context.product_name),
@@ -200,7 +179,7 @@ def generate_response(
     )
 
     try:
-        response = client.models.generate_content(
+        response = generate_content(
             model="gemini-2.0-flash",
             contents=prompt,
             config=types.GenerateContentConfig(

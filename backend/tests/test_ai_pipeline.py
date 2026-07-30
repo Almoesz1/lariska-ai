@@ -2,6 +2,7 @@ import sys
 import os
 import asyncio
 import logging
+import re
 from datetime import datetime
 from rich.console import Console
 from rich.panel import Panel
@@ -17,6 +18,9 @@ from app.schemas.pipeline import (
     ScoringDecisionType,
     ScoringDecision,
     ConversationContext,
+    EntityResult,
+    IntentEntityResult,
+    EmotionResult,
 )
 
 # Impor Modul Pipeline AI
@@ -27,6 +31,74 @@ from app.pipeline.retrieval import get_recommended_products
 
 console = Console()
 logging.basicConfig(level=logging.ERROR)
+
+# Default aman untuk CI/lokal: tidak mengonsumsi kuota Gemini.
+# Mode live dijalankan eksplisit dengan LARISKA_AI_PIPELINE_MODE=live.
+PIPELINE_MODE = os.getenv("LARISKA_AI_PIPELINE_MODE", "offline").strip().lower()
+LIVE_MODE = PIPELINE_MODE == "live"
+LIVE_PACING_SECONDS = float(os.getenv("LARISKA_AI_PIPELINE_PACING_SECONDS", "35"))
+
+
+def _offline_intent_entity(text: str) -> IntentEntityResult:
+    """Stub deterministik untuk memverifikasi kontrak pipeline tanpa API."""
+    normalized = text.lower()
+    if any(term in normalized for term in ("diskon", "ditawar", "bisa rp", "harga mati")):
+        intent = IntentType.NEGO
+    elif any(term in normalized for term in ("transfer", "invoice", "bungkus", "checkout")):
+        intent = IntentType.CHECKOUT
+    elif any(term in normalized for term in ("komplain", "lama", "belum sampe", "belum sampai")):
+        intent = IntentType.KOMPLAIN
+    elif any(term in normalized for term in ("bahan", "warna", "ukuran", "spesifikasi")):
+        intent = IntentType.TANYA_PRODUK
+    elif any(term in normalized for term in ("ready", "stok")):
+        intent = IntentType.TANYA_STOK
+    else:
+        intent = IntentType.LAINNYA
+
+    offered_price = None
+    price_matches = re.findall(r"(?:rp\s*)?(\d+(?:[.]\d{3})?)\s*(?:ribu|rb)?", normalized)
+    if intent == IntentType.NEGO and price_matches:
+        raw_price = price_matches[-1].replace(".", "")
+        multiplier = 1000 if "ribu" in normalized or "rb" in normalized else 1
+        offered_price = float(raw_price) * multiplier
+
+    return IntentEntityResult(
+        intent=intent,
+        entities=EntityResult(offered_price=offered_price),
+        confidence=1.0,
+        raw_text=text,
+    )
+
+
+def _offline_emotion(text: str) -> EmotionResult:
+    normalized = text.lower()
+    if "lama" in normalized or "!" in text:
+        return EmotionResult(
+            emotion=EmotionType.MARAH,
+            confidence=1.0,
+            tone_hint="Balas dengan empati dan langsung ke inti masalah.",
+        )
+    if any(term in normalized for term in ("sekarang", "detik ini", "cepat")):
+        return EmotionResult(
+            emotion=EmotionType.BURU_BURU,
+            confidence=1.0,
+            tone_hint="Balas langsung ke inti jawaban.",
+        )
+    return EmotionResult(
+        emotion=EmotionType.NETRAL,
+        confidence=1.0,
+        tone_hint="Balas ramah dan profesional.",
+    )
+
+
+def _offline_response(scoring: ScoringDecision) -> str:
+    """Balasan lokal yang menampilkan harga hasil Sales Brain, bukan harga LLM."""
+    if scoring.decision == ScoringDecisionType.NO_NEGO:
+        return "[OFFLINE] Kontrak pipeline valid; tidak ada perubahan harga."
+    return (
+        f"[OFFLINE] Keputusan Sales Brain: {scoring.decision.value}; "
+        f"harga final Rp{scoring.final_price:,.0f}."
+    )
 
 
 def create_mock_context(
@@ -110,27 +182,6 @@ TEST_SCENARIOS = [
 ]
 
 
-async def generate_response_with_retry(ctx, intent_res, emotion_res, scoring_obj, recommended_prods, max_retries=3):
-    """Wrapper untuk memanggil Gemini dengan penanganan Rate-Limit (429)."""
-    for attempt in range(max_retries):
-        response_text = generate_response(
-            context=ctx,
-            intent_result=intent_res,
-            emotion_result=emotion_res,
-            scoring_decision=scoring_obj,
-            recommended_products=recommended_prods,
-        )
-        reply = response_text.reply_text if hasattr(response_text, "reply_text") else str(response_text)
-        
-        # Jika respon masih fallback default akibat 429, tunggu sebentar & retry
-        if "Terima kasih sudah menghubungi kami" in reply and attempt < max_retries - 1:
-            console.print(f"[bold yellow]⚠️ Gemini hit rate limit (429). Menunggu 12 detik sebelum retry #{attempt + 2}...[/bold yellow]")
-            await asyncio.sleep(12)
-        else:
-            return reply
-    return reply
-
-
 async def run_pipeline_test(scenario: dict):
     title = scenario["name"]
     input_text = scenario["input_text"]
@@ -140,10 +191,10 @@ async def run_pipeline_test(scenario: dict):
     console.print(f"[bold yellow]Input User:[/bold yellow] \"{input_text}\"")
 
     # 1. Intent & Entity Extraction
-    intent_res = extract_intent_entity(input_text)
+    intent_res = _offline_intent_entity(input_text) if not LIVE_MODE else extract_intent_entity(input_text)
 
     # 2. Emotion Classifier
-    emotion_res = classify_emotion(input_text)
+    emotion_res = _offline_emotion(input_text) if not LIVE_MODE else classify_emotion(input_text)
 
     # 3. Eksekusi Scoring Engine
     intent_val = getattr(intent_res, "intent", None)
@@ -184,23 +235,38 @@ async def run_pipeline_test(scenario: dict):
     # 4. Product Retrieval
     recommended_prods = []
     if intent_val in (IntentType.REKOMENDASI, IntentType.TANYA_PRODUK):
-        try:
-            recommended_prods = get_recommended_products(
-                customer_id=ctx.customer_id,
-                current_product_id=ctx.product_id,
-                current_category=ctx.product_category,
-                limit=2,
-            )
-        except Exception:
+        if not LIVE_MODE:
             recommended_prods = [
                 {"id": "p2", "name": "Running Shoes X", "price": 490000},
                 {"id": "p3", "name": "Casual Slip-On", "price": 380000},
             ]
+        else:
+            try:
+                recommended_prods = get_recommended_products(
+                    customer_id=ctx.customer_id,
+                    current_product_id=ctx.product_id,
+                    current_category=ctx.product_category,
+                    limit=2,
+                )
+            except Exception:
+                recommended_prods = [
+                    {"id": "p2", "name": "Running Shoes X", "price": 490000},
+                    {"id": "p3", "name": "Casual Slip-On", "price": 380000},
+                ]
 
     # 5. Sales Response Generator (dengan Retry Delay)
-    reply_out = await generate_response_with_retry(
-        ctx, intent_res, emotion_res, scoring_obj, recommended_prods
-    )
+    if LIVE_MODE:
+        # Retry 429/5xx ada di layer produksi, sama dengan webhook live.
+        response_text = generate_response(
+            context=ctx,
+            intent_result=intent_res,
+            emotion_result=emotion_res,
+            scoring_decision=scoring_obj,
+            recommended_products=recommended_prods,
+        )
+        reply_out = response_text.reply_text if hasattr(response_text, "reply_text") else str(response_text)
+    else:
+        reply_out = _offline_response(scoring_obj)
 
     # Output Tabel Diagnostik
     table = Table(title="AI Reasoning Breakdown", show_header=True, header_style="bold magenta")
@@ -231,14 +297,16 @@ async def run_pipeline_test(scenario: dict):
 async def main():
     console.print(Panel.fit(
         "[bold white]LARISKA AI — Local Pipeline Diagnostic Suite[/bold white]\n"
-        "[dim]Menguji NLU, Emotion, LightGBM Scoring, & Gemini Response[/dim]",
+        f"[dim]Mode: {'LIVE Gemini' if LIVE_MODE else 'OFFLINE mock'} | "
+        "Menguji NLU, Emotion, LightGBM Scoring, & Response[/dim]",
         style="blue"
     ))
 
     for scenario in TEST_SCENARIOS:
         await run_pipeline_test(scenario)
         # Beri jeda 8 detik antar skenario untuk menjaga Quota RPM Gemini Free Tier
-        await asyncio.sleep(8)
+        if LIVE_MODE:
+            await asyncio.sleep(LIVE_PACING_SECONDS)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 import hmac
 import hashlib
 import logging
+from datetime import datetime
 from typing import Optional, Dict, Any, Set
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, Response, status
@@ -23,7 +24,7 @@ from app.pipeline.state_tracking import (
     save_negotiation_log,
 )
 from app.pipeline.stt import transcribe_or_passthrough
-from app.schemas.pipeline import IntentType, ScoringDecisionType
+from app.schemas.pipeline import IntentType, ScoringDecision, ScoringDecisionType
 from app.services.supabase_client import get_supabase
 from app.services.whatsapp_client import (
     download_media,
@@ -39,6 +40,52 @@ router = APIRouter(prefix="/api/whatsapp", tags=["whatsapp"])
 # In-memory LRU / Cache sederhana untuk Message Deduplication saat Demo
 PROCESSED_MSG_IDS: Set[str] = set()
 MAX_CACHE_SIZE = 1000
+
+
+def _build_scoring_decision(context: Any, intent_result: Any) -> ScoringDecision:
+    """Adapt context percakapan ke kontrak scoring engine tanpa melewati guardrail."""
+    product_price = float(getattr(context, "product_price", 0.0) or 0.0)
+    floor_price = float(getattr(context, "product_floor_price", product_price) or product_price)
+
+    if intent_result.intent != IntentType.NEGO or product_price <= 0:
+        return ScoringDecision(
+            decision=ScoringDecisionType.NO_NEGO,
+            final_price=product_price,
+            model_confidence=1.0,
+            reasoning="Non-negotiation intent atau produk belum teridentifikasi.",
+        )
+
+    offered_price = getattr(intent_result.entities, "offered_price", None)
+    requested_discount = 0.0
+    if offered_price is not None and offered_price > 0:
+        requested_discount = max((product_price - float(offered_price)) / product_price, 0.0)
+
+    now = datetime.now()
+    features = {
+        "margin_pct": max((product_price - floor_price) / product_price, 0.0),
+        # Stock awal belum disimpan di ConversationContext; gunakan 1.0 sesuai
+        # kontrak ScoringInput ketika rasio aktual belum tersedia.
+        "stock_ratio": 1.0,
+        "customer_loyalty": min(max(float(getattr(context, "total_orders", 0) or 0) / 10.0, 0.0), 1.0),
+        "discount_requested_pct": min(requested_discount, 1.0),
+        "hour_of_day": now.hour,
+        "is_peak_hour": 1 if 19 <= now.hour <= 22 else 0,
+    }
+    raw = run_scoring_engine(
+        features=features,
+        product_price=product_price,
+        floor_price=floor_price,
+    )
+    final_price = float(raw["final_price"])
+    return ScoringDecision(
+        decision=ScoringDecisionType(raw["final_action"]),
+        final_price=final_price,
+        discount_amount=max(product_price - final_price, 0.0),
+        discount_pct=float(raw["applied_discount_pct"]),
+        model_confidence=float(raw["ml_confidence"]),
+        floor_price_enforced=bool(raw["floor_price_locked"]),
+        reasoning=str(raw["guard_reason"]),
+    )
 
 
 def _is_duplicate_message(msg_id: str) -> bool:
@@ -348,7 +395,7 @@ async def _handle_single_message(message: Dict[str, Any], contact: Dict[str, Any
     # ------------------------------------------------------------
     # TAHAP 5a — Adaptive Scoring Engine (LightGBM)
     # ------------------------------------------------------------
-    scoring_decision = await run_in_threadpool(run_scoring_engine, context, intent_result)
+    scoring_decision = await run_in_threadpool(_build_scoring_decision, context, intent_result)
 
     # ------------------------------------------------------------
     # TAHAP 5b — Product Retrieval & Recommendations (pgvector)
@@ -362,7 +409,7 @@ async def _handle_single_message(message: Dict[str, Any], contact: Dict[str, Any
 
     if should_recommend or (
         intent_result.intent == IntentType.NEGO
-        and getattr(scoring_decision, "decision", None)
+        and scoring_decision.decision
         in (ScoringDecisionType.DISCOUNT, ScoringDecisionType.BONUS)
     ):
         recommended_products = await run_in_threadpool(

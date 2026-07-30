@@ -42,7 +42,7 @@ import re
 from google.genai import types
 from pydantic import BaseModel
 
-from app.pipeline.gemini_client import get_gemini_client
+from app.pipeline.gemini_client import generate_content
 from app.schemas.pipeline import EmotionResult, EmotionType
 
 logger = logging.getLogger(__name__)
@@ -174,12 +174,11 @@ def classify_emotion(text: str) -> EmotionResult:
     3. Rule-based sendiri selalu punya default 'netral' di ujungnya, jadi
        fungsi ini dijamin selalu mengembalikan EmotionResult yang valid.
     """
-    client = get_gemini_client()
     preview = f"{text[:60]}..." if len(text) > 60 else text
     logger.info(f"[Emotion] Classifying: '{preview}'")
 
     try:
-        response = client.models.generate_content(
+        response = generate_content(
             model=_GEMINI_MODEL,
             contents=f"{_EMOTION_PROMPT}\n\nPesan:\n\"{text}\"",
             config=types.GenerateContentConfig(

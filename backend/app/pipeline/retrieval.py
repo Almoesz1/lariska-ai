@@ -16,9 +16,7 @@ Referensi proposal Bab 4, Tahap 5: Retrieval (pgvector)
 import logging
 from typing import Any, Dict, List, Optional
 
-from google import genai
-
-from app.core.config import settings
+from app.pipeline.gemini_client import embed_content
 from app.services.supabase_client import get_supabase
 
 logger = logging.getLogger(__name__)
@@ -26,29 +24,12 @@ logger = logging.getLogger(__name__)
 # Konstanta Model Embedding Google GenAI
 EMBEDDING_MODEL = "text-embedding-004"
 
-# Client instance (lazy initialized)
-_genai_client: Optional[genai.Client] = None
-
-
-def _get_genai_client() -> Optional[genai.Client]:
-    """Inisialisasi lazy singleton untuk Google GenAI Client."""
-    global _genai_client
-    if _genai_client is None and settings.gemini_api_key:
-        _genai_client = genai.Client(api_key=settings.gemini_api_key)
-    return _genai_client
-
-
 def generate_text_embedding(text: str) -> Optional[List[float]]:
     """
     Menghasilkan vector embedding dari teks menggunakan SDK google-genai terbaru.
     """
-    client = _get_genai_client()
-    if not client:
-        logger.warning("[Retrieval] GEMINI_API_KEY tidak dikonfigurasi, skip vector embedding.")
-        return None
-
     try:
-        response = client.models.embed_content(
+        response = embed_content(
             model=EMBEDDING_MODEL,
             contents=text,
         )
