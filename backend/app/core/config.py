@@ -32,23 +32,31 @@ class Settings(BaseSettings):
     whatsapp_token: Optional[str] = Field(default=None, validation_alias="WHATSAPP_TOKEN")
     whatsapp_phone_number_id: Optional[str] = Field(default=None, validation_alias="WHATSAPP_PHONE_NUMBER_ID")
     whatsapp_verify_token: Optional[str] = Field(default=None, validation_alias="WHATSAPP_VERIFY_TOKEN")
+    # BARU — Sprint 6: App Secret (BEDA dari WHATSAPP_TOKEN/access token).
+    # Diambil dari Meta App Dashboard > Settings > Basic > App Secret.
+    # Dipakai KHUSUS untuk verifikasi HMAC signature X-Hub-Signature-256 di
+    # webhook — bukan untuk memanggil API (itu tugas whatsapp_token).
+    whatsapp_app_secret: Optional[str] = Field(default=None, validation_alias="WHATSAPP_APP_SECRET")
 
     # =====================================================
-    # AI & LLM (Persiapan Sprint 4A)
+    # AI & LLM
     # =====================================================
     llm_provider: str = Field(default="gemini", validation_alias="LLM_PROVIDER")
-    
-    # Kunci spesifik provider
+
     openai_api_key: Optional[str] = Field(default=None, validation_alias="OPENAI_API_KEY")
-    google_api_key: Optional[str] = Field(default=None, validation_alias="GOOGLE_API_KEY") # Untuk Gemini
+    google_api_key: Optional[str] = Field(default=None, validation_alias="GOOGLE_API_KEY")
     llm_api_key: Optional[str] = Field(default=None, validation_alias="LLM_API_KEY")
 
     def get_effective_google_api_key(self) -> Optional[str]:
         return self.google_api_key or self.llm_api_key
-    
-    # Path/Nama Model untuk Embedding dan Audio
+
     embedding_model_path: str = Field(default="text-embedding-3-small", validation_alias="EMBEDDING_MODEL_PATH")
     whisper_model_path: str = Field(default="base", validation_alias="WHISPER_MODEL_PATH")
+
+    # =====================================================
+    # Sales Brain / Adaptive Scoring Engine
+    # =====================================================
+    model_artifacts_dir: Optional[str] = Field(default=None, validation_alias="MODEL_ARTIFACTS_DIR")
 
     # =====================================================
     # Midtrans

@@ -43,7 +43,14 @@ class ScoringDecisionType(str, Enum):
     DISCOUNT        = "discount"
     BONUS           = "bonus"
     COUNTER_OFFER   = "counter_offer"
-    NO_NEGO         = "no_nego"  # Untuk non-negosiasi intent
+    # PENTING: NO_NEGO SENGAJA TIDAK ADA di CHECK constraint
+    # negotiation_logs.ai_decision (schema.sql, final sejak Sprint 2A) —
+    # cuma 'hold_price'/'discount'/'bonus'/'counter_offer' yang diizinkan.
+    # Keputusan bertipe NO_NEGO TIDAK BOLEH ditulis ke tabel negotiation_logs
+    # sama sekali. Guard ada di state_tracking.py::save_negotiation_log().
+    # Kalau menambah pemanggil save_negotiation_log() baru di sprint
+    # manapun, JANGAN asumsikan semua ScoringDecisionType valid untuk DB.
+    NO_NEGO         = "no_nego"  # Untuk non-negosiasi intent — TIDAK ditulis ke DB
 
 
 # ============================================================

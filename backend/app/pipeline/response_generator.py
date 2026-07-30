@@ -18,7 +18,8 @@ Referensi proposal Bab 4, Tahap 6: LLM Response Generation
 import logging
 from typing import Optional
 
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 from app.core.config import settings
 from app.schemas.pipeline import (
@@ -34,27 +35,22 @@ from app.schemas.pipeline import (
 
 logger = logging.getLogger(__name__)
 
-_response_model = None
+# Gunakan Gemini Client (Singleton di module level)
+_response_client = None
 
 
-def _get_response_model():
-    global _response_model
-    if _response_model is not None:
-        return _response_model
+def _get_response_client():
+    global _response_client
+    if _response_client is not None:
+        return _response_client
 
     api_key = settings.get_effective_google_api_key()
     if not api_key:
         raise RuntimeError("API key Gemini tidak ditemukan di .env (set GOOGLE_API_KEY atau LLM_API_KEY).")
 
-    genai.configure(api_key=api_key)
-    _response_model = genai.GenerativeModel(
-        model_name="gemini-flash-latest",
-        generation_config=genai.types.GenerationConfig(
-            temperature=0.7,   # Lebih tinggi untuk variasi bahasa natural
-            max_output_tokens=500,
-        ),
-    )
-    return _response_model
+    # Inisialisasi client menggunakan SDK google-genai terbaru
+    _response_client = genai.Client(api_key=api_key)
+    return _response_client
 
 
 # ============================================================
@@ -184,7 +180,7 @@ def generate_response(
     Returns:
         Teks balasan yang siap dikirim ke WhatsApp.
     """
-    model = _get_response_model()
+    client = _get_response_client()
 
     prompt = _SYSTEM_TEMPLATE.format(
         shop_name="Toko Kami",  # Bisa dikonfigurasi dari settings nanti
@@ -204,7 +200,14 @@ def generate_response(
     )
 
     try:
-        response = model.generate_content(prompt)
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.7,
+                max_output_tokens=500,
+            ),
+        )
         reply = response.text.strip()
         logger.info(f"[ResponseGenerator] Reply: '{reply[:100]}...' " if len(reply) > 100 else f"[ResponseGenerator] Reply: '{reply}'")
         return reply

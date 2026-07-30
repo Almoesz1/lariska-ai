@@ -1,19 +1,16 @@
 """
-LARISKA AI — Sprint 4C
+LARISKA AI — Sprint 4C & QA Audit
 Payment Client — Midtrans Sandbox Integration
 
-Mengintegrasikan Midtrans Snap API untuk membuat QRIS payment link.
-Digunakan saat pelanggan setuju harga dan minta invoice/QRIS.
+Mengintegrasikan Midtrans Snap & Core API untuk membuat QRIS payment link dan mengecek status transaksi.
+Digunakan saat pelanggan menyetujui harga dan meminta pembayaran.
 
-Mode: Sandbox (MIDTRANS_IS_PRODUCTION=false di .env)
-Fitur: Buat transaksi, generate QRIS/payment link, simpan ke tabel payments
-
-Referensi proposal Bab 5 Tier 1: Invoice + QRIS sandbox
+Mode: Sandbox / Production (dikontrol via MIDTRANS_IS_PRODUCTION di .env)
+Referensi proposal Bab 5 Tier 1: Invoice + QRIS Sandbox
 """
 
 import logging
-from typing import Optional
-from uuid import uuid4
+from typing import Any, Dict, Optional
 
 import midtransclient
 
@@ -21,15 +18,13 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-# ============================================================
-# Midtrans Client — lazy singleton
-# ============================================================
-
-_snap_client = None
-_core_api_client = None
+# Singletons internal untuk Snap dan CoreAPI
+_snap_client: Optional[midtransclient.Snap] = None
+_core_api_client: Optional[midtransclient.CoreApi] = None
 
 
-def _get_snap():
+def _get_snap() -> midtransclient.Snap:
+    """Mengambil atau menginisialisasi instance Midtrans Snap API."""
     global _snap_client
     if _snap_client is not None:
         return _snap_client
@@ -38,7 +33,7 @@ def _get_snap():
     if not server_key:
         raise RuntimeError(
             "MIDTRANS_SERVER_KEY tidak ada di .env. "
-            "Daftar di https://dashboard.midtrans.com untuk mendapatkan sandbox key."
+            "Dapatkan server key dari Dashboard Midtrans Sandbox."
         )
 
     _snap_client = midtransclient.Snap(
@@ -47,13 +42,13 @@ def _get_snap():
         client_key=settings.midtrans_client_key,
     )
     logger.info(
-        f"[PaymentClient] Midtrans Snap initialized "
-        f"(production={settings.midtrans_is_production})"
+        f"[PaymentClient] Midtrans Snap client initialized (production={settings.midtrans_is_production})"
     )
     return _snap_client
 
 
-def _get_core_api():
+def _get_core_api() -> midtransclient.CoreApi:
+    """Mengambil atau menginisialisasi instance Midtrans Core API."""
     global _core_api_client
     if _core_api_client is not None:
         return _core_api_client
@@ -70,10 +65,6 @@ def _get_core_api():
     return _core_api_client
 
 
-# ============================================================
-# Create Payment Transaction
-# ============================================================
-
 def create_qris_payment(
     order_id: str,
     amount: float,
@@ -81,34 +72,29 @@ def create_qris_payment(
     customer_phone: str,
     product_name: str,
     quantity: int = 1,
-) -> dict:
+) -> Dict[str, Any]:
     """
-    Buat transaksi QRIS via Midtrans Snap API.
+    Membuat transaksi QRIS via Midtrans Snap API.
 
     Args:
-        order_id: UUID order dari tabel orders (dipakai sebagai Midtrans order_id).
-        amount: Total pembayaran dalam Rupiah (tanpa desimal).
-        customer_name: Nama pelanggan untuk detail transaksi.
-        customer_phone: Nomor WA pelanggan.
-        product_name: Nama produk untuk detail item.
-        quantity: Jumlah unit.
+        order_id: UUID order dari tabel orders.
+        amount: Total harga pembayaran dalam Rupiah.
+        customer_name: Nama pelanggan.
+        customer_phone: Nomor WhatsApp pelanggan.
+        product_name: Nama produk/layanan.
+        quantity: Jumlah unit barang.
 
     Returns:
-        Dict dengan keys: 'token', 'redirect_url', 'payment_url'
-        - token: Midtrans Snap token (untuk embed di frontend)
-        - redirect_url: URL langsung ke payment page
-        - payment_url: Alias redirect_url (nama lebih deskriptif)
-
-    Raises:
-        RuntimeError: Jika Midtrans API error.
+        Dict berisi 'token', 'redirect_url', 'payment_url', dan 'midtrans_order_id'.
     """
     snap = _get_snap()
 
-    # Midtrans mengharuskan amount berupa integer (Rupiah penuh)
+    # Midtrans mengharuskan amount berupa integer Rupiah utuh
     amount_int = int(round(amount))
+    quantity_safe = max(1, quantity)
+    unit_price = amount_int // quantity_safe
 
-    # order_id unik per transaksi — gunakan order_id dari database
-    # kalau ada retry, tambahkan suffix unik
+    # Format ID transaksi khusus Midtrans
     midtrans_order_id = f"LARISKA-{order_id[:8].upper()}"
 
     param = {
@@ -119,70 +105,66 @@ def create_qris_payment(
         "item_details": [
             {
                 "id": order_id[:8],
-                "price": amount_int // quantity,
-                "quantity": quantity,
-                "name": product_name[:50],  # Midtrans max 50 chars
+                "price": unit_price,
+                "quantity": quantity_safe,
+                "name": product_name[:50],  # Maksimal 50 karakter untuk Midtrans
             }
         ],
         "customer_details": {
             "first_name": customer_name or "Pelanggan",
             "phone": customer_phone,
         },
-        "enabled_payments": ["qris"],  # Hanya QRIS untuk demo
+        "enabled_payments": ["qris"],  # Khusus transaksi QRIS
         "expiry": {
             "unit": "hour",
-            "duration": 24,  # QRIS expired dalam 24 jam
+            "duration": 24,  # QRIS aktif selama 24 jam
         },
     }
 
     logger.info(
-        f"[PaymentClient] Creating QRIS for order {midtrans_order_id}, "
-        f"amount=Rp{amount_int:,}"
+        f"[PaymentClient] Membuat QRIS untuk order {midtrans_order_id}, amount=Rp{amount_int:,}"
     )
 
     try:
         transaction = snap.create_transaction(param)
+        redirect_url = transaction.get("redirect_url")
         result = {
             "token": transaction.get("token"),
-            "redirect_url": transaction.get("redirect_url"),
-            "payment_url": transaction.get("redirect_url"),
+            "redirect_url": redirect_url,
+            "payment_url": redirect_url,
             "midtrans_order_id": midtrans_order_id,
         }
-        logger.info(f"[PaymentClient] QRIS created: {result['redirect_url']}")
+        logger.info(f"[PaymentClient] QRIS berhasil dibuat: {redirect_url}")
         return result
     except Exception as exc:
         logger.error(f"[PaymentClient] Midtrans error: {exc}")
-        raise RuntimeError(f"Gagal membuat QRIS: {exc}") from exc
+        raise RuntimeError(f"Gagal membuat transaksi QRIS: {exc}") from exc
 
 
-def check_transaction_status(midtrans_order_id: str) -> dict:
+def check_transaction_status(midtrans_order_id: str) -> Dict[str, Any]:
     """
-    Cek status transaksi Midtrans (polling dari dashboard admin atau webhook fallback).
-
-    Returns:
-        Dict dengan keys: 'transaction_status', 'fraud_status', 'payment_type'
+    Pengecekan status transaksi ke Midtrans Core API.
     """
     core = _get_core_api()
     try:
         status = core.transactions.status(midtrans_order_id)
         logger.info(
-            f"[PaymentClient] Status {midtrans_order_id}: "
-            f"{status.get('transaction_status')}"
+            f"[PaymentClient] Status {midtrans_order_id}: {status.get('transaction_status')}"
         )
         return status
     except Exception as exc:
-        logger.error(f"[PaymentClient] Status check error: {exc}")
+        logger.error(f"[PaymentClient] Gagal mengecek status transaksi: {exc}")
         raise
 
 
-def parse_midtrans_status(transaction_status: str, fraud_status: Optional[str] = None) -> str:
+def parse_midtrans_status(
+    transaction_status: str, fraud_status: Optional[str] = None
+) -> str:
     """
-    Konversi Midtrans transaction_status ke status internal LARISKA:
-    'pending' | 'success' | 'failed' | 'expired'
-
-    Referensi: https://docs.midtrans.com/reference/get-transaction-status
+    Pemetaan status transaksi Midtrans ke status internal LARISKA AI.
+    Returns: 'pending' | 'success' | 'failed' | 'expired'
     """
-    if transaction_status == "settlement" or transaction_status == "capture":
+    if transaction_status in ("settlement", "capture"):
         if fraud_status in (None, "accept"):
             return "success"
         return "failed"

@@ -1,81 +1,100 @@
 """
-LARISKA AI — Sprint 4A
+LARISKA AI — Sprint 4A (QA Patch)
 Intent Classification + Entity Extraction — Tahap 2 AI Pipeline
 
-Menggunakan Gemini (Google AI) dengan structured output (JSON mode) untuk memastikan
-output deterministik dan bisa di-parse dengan aman tanpa regex.
+Perubahan dari versi awal setelah Quality Gate review:
+- SDK diganti dari `google-generativeai` (legacy, akan deprecated) ke
+  `google-genai` (SDK resmi terbaru per dokumentasi Google saat ini).
+  requirements.txt perlu diupdate: hapus google-generativeai, tambah google-genai.
+- Model dipin eksplisit ke "gemini-3.5-flash-lite" (GA/stable) — BUKAN alias
+  "-latest". Dokumentasi resmi Google: alias -latest menunjuk ke model
+  eksperimental, rate limit lebih ketat, dan bisa berpindah versi tanpa
+  pemberitahuan — berisiko untuk demo live. gemini-3.5-flash-lite dipilih
+  karena task ini murni klasifikasi/ekstraksi terstruktur (bukan reasoning
+  kompleks) — sesuai rekomendasi resmi Google untuk kategori use case
+  "high-volume extraction, routing, or classification".
+- Structured output sekarang pakai response_schema (Pydantic model
+  langsung), bukan cuma instruksi format di prompt + parsing manual. Ini
+  MENGHILANGKAN kebutuhan fungsi _safe_float() sepenuhnya — offered_price
+  dipaksa jadi float oleh Gemini sendiri lewat schema enforcement, tidak
+  pernah lewat jalur string-parsing yang rawan salah lagi.
+- Parameter temperature dihapus dari generation config, sesuai rekomendasi
+  resmi Google untuk seluruh model Gemini 3.x ("strongly recommend not
+  changing the default values").
 
-Desain penting:
-- LLM HANYA bertugas di tahap ini untuk ekstraksi intent/entity.
-- LLM TIDAK menentukan harga, diskon, atau keputusan bisnis apapun (itu tugas Sales Brain).
-- Output selalu divalidasi dengan Pydantic (IntentEntityResult) sebelum diteruskan ke pipeline.
+Desain penting (TIDAK berubah dari versi awal — ini prinsip inti proposal):
+- LLM HANYA bertugas ekstraksi intent/entity di tahap ini.
+- LLM TIDAK PERNAH menentukan harga, diskon, atau keputusan bisnis apapun
+  (itu tugas Sales Brain Sprint 5A, lewat Adaptive Scoring Engine).
+- Output selalu divalidasi Pydantic sebelum diteruskan ke pipeline.
+- Kegagalan apapun (network, parsing, validasi) di-fallback ke intent
+  'lainnya', TIDAK PERNAH crash — graceful degradation, konsisten dengan
+  filosofi global exception handler di main.py.
 
-Referensi proposal Bab 4, Tahap 2: Intent Classification + Entity Extraction (LLM structured output/JSON mode)
+Referensi proposal Bab 4, Tahap 2: Intent Classification + Entity Extraction
 """
 
-import json
 import logging
-from datetime import datetime
+from functools import lru_cache
 
-import google.generativeai as genai
+from google import genai
+from google.genai import types
+from pydantic import BaseModel
 
 from app.core.config import settings
-from app.schemas.pipeline import (
-    EmotionType,
-    EntityResult,
-    IntentEntityResult,
-    IntentType,
-)
+from app.schemas.pipeline import EntityResult, IntentEntityResult, IntentType
 
 logger = logging.getLogger(__name__)
 
+# Model dipin eksplisit — lihat penjelasan di docstring modul.
+_GEMINI_MODEL = "gemini-3.5-flash-lite"
+
+
 # ============================================================
-# Gemini client — lazy singleton
+# Gemini client — lazy singleton (pola konsisten dengan supabase_client.py)
 # ============================================================
 
-_gemini_model = None
-
-
-def _get_gemini_model():
-    global _gemini_model
-    if _gemini_model is not None:
-        return _gemini_model
-
+@lru_cache
+def _get_gemini_client() -> genai.Client:
     api_key = settings.get_effective_google_api_key()
     if not api_key:
         raise RuntimeError(
             "API key Gemini tidak ditemukan di .env. "
-            "Tambahkan GOOGLE_API_KEY=<your_key> atau LLM_API_KEY=<your_key> ke file .env."
+            "Tambahkan GOOGLE_API_KEY=<key> atau LLM_API_KEY=<key>."
         )
-    genai.configure(api_key=api_key)
-    _gemini_model = genai.GenerativeModel(
-        model_name="gemini-flash-latest",
-        generation_config=genai.types.GenerationConfig(
-            temperature=0.1,          # Rendah untuk output deterministik
-            response_mime_type="application/json",  # JSON mode
-        ),
-    )
-    logger.info("[IntentEntity] Gemini model initialized (gemini-flash-latest).")
-    return _gemini_model
+    logger.info(f"[IntentEntity] Gemini client initialized (model={_GEMINI_MODEL}).")
+    return genai.Client(api_key=api_key)
 
 
 # ============================================================
-# Prompt system
+# Schema untuk structured output.
+#
+# SENGAJA dipisah dari IntentEntityResult (schemas/pipeline.py) — raw_text
+# TIDAK diminta ke Gemini sama sekali, kita isi sendiri dari input asli,
+# supaya tidak ada risiko Gemini memparafrase ulang teks pelanggan.
+# ============================================================
+
+class _GeminiEntitySchema(BaseModel):
+    product_name: str | None = None
+    quantity: int | None = None
+    offered_price: float | None = None
+    target_product_category: str | None = None
+
+
+class _GeminiExtractionSchema(BaseModel):
+    intent: IntentType
+    entities: _GeminiEntitySchema
+    confidence: float
+
+
+# ============================================================
+# Prompt system — tidak perlu lagi mendeskripsikan format JSON manual;
+# response_schema yang mem-force struktur output. Prompt cukup berisi
+# panduan semantik (kapan intent apa, cara baca angka harga).
 # ============================================================
 
 _SYSTEM_PROMPT = """Kamu adalah AI ekstraksi intent dan entitas untuk sistem penjualan UMKM Indonesia.
-Analisis pesan pelanggan dan kembalikan JSON dengan format PERSIS seperti ini:
-
-{
-  "intent": "<salah satu dari: tanya_harga|nego|tanya_stok|komplain|checkout|tanya_produk|rekomendasi|greeting|lainnya>",
-  "entities": {
-    "product_name": "<nama produk yang disebutkan, atau null jika tidak ada>",
-    "quantity": <jumlah unit sebagai integer, atau null>,
-    "offered_price": <harga yang ditawarkan pelanggan sebagai float (angka saja, tanpa Rp/,), atau null>,
-    "target_product_category": "<kategori produk bila tanya umum, atau null>"
-  },
-  "confidence": <float 0.0 - 1.0, seberapa yakin kamu dengan intent ini>
-}
+Analisis pesan pelanggan berikut dan ekstrak intent serta entitas yang relevan.
 
 Panduan intent:
 - tanya_harga: pelanggan bertanya harga produk
@@ -88,10 +107,10 @@ Panduan intent:
 - greeting: salam pembuka tanpa pertanyaan spesifik
 - lainnya: tidak masuk kategori lain
 
-PENTING:
-- Hanya kembalikan JSON. Tidak ada teks di luar JSON.
-- offered_price: ekstrak HANYA angka numerik. "150rb" = 150000.0, "150.000" = 150000.0
+Panduan entitas:
+- offered_price: ekstrak HANYA angka numerik murni. "150rb" berarti 150000. "150.000" berarti 150000.
 - Pesan dalam bahasa campur (Indonesia + slang + typo) adalah normal, tangani dengan baik.
+- confidence: seberapa yakin kamu dengan intent yang dipilih (0.0 - 1.0).
 """
 
 
@@ -99,97 +118,58 @@ def extract_intent_entity(text: str) -> IntentEntityResult:
     """
     Ekstrak intent dan entitas dari teks pesan pelanggan.
 
-    Args:
-        text: Teks pesan pelanggan (bisa hasil STT atau teks langsung).
-
-    Returns:
-        IntentEntityResult yang sudah divalidasi Pydantic.
-
-    Raises:
-        RuntimeError: Jika Gemini gagal atau output tidak bisa di-parse.
+    TIDAK PERNAH raise ke caller — kegagalan apapun (network, parsing,
+    validasi) di-fallback ke intent 'lainnya' supaya satu pesan yang sulit
+    diparse tidak menjatuhkan seluruh pipeline.
     """
-    model = _get_gemini_model()
+    client = _get_gemini_client()
 
-    prompt = f"{_SYSTEM_PROMPT}\n\nPesan pelanggan:\n\"{text}\""
-
-    logger.info(f"[IntentEntity] Extracting from: '{text[:80]}...' " if len(text) > 80 else f"[IntentEntity] Extracting from: '{text}'")
-
-    try:
-        response = model.generate_content(prompt)
-        raw_json = response.text.strip()
-
-        # Bersihkan kalau ada markdown code block
-        if raw_json.startswith("```"):
-            raw_json = raw_json.strip("`").strip()
-            if raw_json.startswith("json"):
-                raw_json = raw_json[4:].strip()
-
-        data = json.loads(raw_json)
-    except json.JSONDecodeError as exc:
-        logger.error(f"[IntentEntity] JSON parse error: {exc}. Raw: {response.text[:200]}")
-        # Fallback graceful — daripada crash pipeline
-        return _fallback_result(text)
-    except Exception as exc:
-        logger.error(f"[IntentEntity] Gemini error: {exc}")
-        return _fallback_result(text)
+    preview = f"{text[:80]}..." if len(text) > 80 else text
+    logger.info(f"[IntentEntity] Extracting from: '{preview}'")
 
     try:
-        intent_raw = data.get("intent", "lainnya")
-        # Normalisasi ke enum value yang valid
-        try:
-            intent = IntentType(intent_raw)
-        except ValueError:
-            intent = IntentType.LAINNYA
-
-        entities_raw = data.get("entities", {})
-        entities = EntityResult(
-            product_name=entities_raw.get("product_name"),
-            quantity=entities_raw.get("quantity"),
-            offered_price=_safe_float(entities_raw.get("offered_price")),
-            target_product_category=entities_raw.get("target_product_category"),
+        response = client.models.generate_content(
+            model=_GEMINI_MODEL,
+            contents=f"{_SYSTEM_PROMPT}\n\nPesan pelanggan:\n\"{text}\"",
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=_GeminiExtractionSchema,
+            ),
         )
-
-        result = IntentEntityResult(
-            intent=intent,
-            entities=entities,
-            confidence=float(data.get("confidence", 1.0)),
-            raw_text=text,
-        )
-
-        logger.info(
-            f"[IntentEntity] intent={result.intent.value} | "
-            f"product={entities.product_name} | "
-            f"offered={entities.offered_price} | "
-            f"confidence={result.confidence:.2f}"
-        )
-        return result
+        parsed: _GeminiExtractionSchema | None = response.parsed
+        if parsed is None:
+            raise ValueError("response.parsed kosong — output tidak memenuhi schema.")
 
     except Exception as exc:
-        logger.error(f"[IntentEntity] Pydantic validation error: {exc}")
+        logger.error(f"[IntentEntity] Gemini error/parse failure: {exc}")
         return _fallback_result(text)
 
+    result = IntentEntityResult(
+        intent=parsed.intent,
+        entities=EntityResult(
+            product_name=parsed.entities.product_name,
+            quantity=parsed.entities.quantity,
+            offered_price=parsed.entities.offered_price,
+            target_product_category=parsed.entities.target_product_category,
+        ),
+        confidence=parsed.confidence,
+        raw_text=text,
+    )
 
-def _safe_float(value) -> float | None:
-    """Konversi nilai apapun ke float, return None jika tidak bisa."""
-    if value is None:
-        return None
-    try:
-        # Hapus karakter non-numerik kecuali titik
-        if isinstance(value, str):
-            cleaned = value.replace(",", "").replace(".", "")
-            # Kalau ada format "150.000" (ribuan pakai titik)
-            if len(cleaned) > len(value.replace(",", "")):
-                cleaned = value.replace(".", "").replace(",", "")
-            return float(cleaned)
-        return float(value)
-    except (ValueError, TypeError):
-        return None
+    logger.info(
+        f"[IntentEntity] intent={result.intent.value} | "
+        f"product={result.entities.product_name} | "
+        f"offered={result.entities.offered_price} | "
+        f"confidence={result.confidence:.2f}"
+    )
+    return result
 
 
 def _fallback_result(text: str) -> IntentEntityResult:
     """
-    Fallback saat Gemini gagal — kembalikan intent 'lainnya' daripada crash pipeline.
-    Sistem tetap bisa merespons (meski kurang akurat) → lebih baik daripada error 500.
+    Fallback saat Gemini gagal — kembalikan intent 'lainnya' daripada crash
+    pipeline. Sistem tetap bisa merespons (meski kurang akurat) → lebih baik
+    daripada error 500 di tengah demo.
     """
     logger.warning("[IntentEntity] Using fallback result (lainnya).")
     return IntentEntityResult(

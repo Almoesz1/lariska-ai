@@ -1,71 +1,71 @@
 """
-LARISKA AI — Sprint 4A
+LARISKA AI — Sprint 4A (QA Patch)
 Speech-to-Text (STT) — Tahap 1 AI Pipeline
+
+Perubahan dari versi awal setelah Quality Gate review:
+- Singleton model diganti dari lock manual (tidak thread-safe, dan
+  menciptakan pola baru di luar konvensi project) menjadi @lru_cache —
+  pola yang SAMA PERSIS dengan services/supabase_client.py::get_supabase().
+  functools.lru_cache thread-safe secara native.
+- model_size sekarang benar-benar dibaca dari settings.whisper_model_path
+  (config.py). Sebelumnya cuma disebut di docstring tapi tidak pernah
+  dipakai di kode — dokumentasi menyesatkan.
 
 Mengubah voice note WhatsApp menjadi teks menggunakan Whisper (open-source, self-host).
 Mendukung input berupa:
-  - file path (bytes dari voice note yang sudah di-download)
-  - URL audio (didownload dulu, lalu di-transcribe)
+  - bytes audio (dari voice note yang sudah di-download)
+  - path file lokal
 
-Whisper model di-load SEKALI saat aplikasi start (lazy singleton), bukan per request,
-untuk menghindari cold start yang memakan waktu ~2-5 detik setiap pesan masuk.
+CATATAN ARSITEKTUR (belum final — perlu konfirmasi eksplisit):
+Modul ini pakai Whisper self-hosted (openai-whisper + torch, load model
+lokal). Ini butuh binary `ffmpeg` terinstall terpisah di PATH sistem (bukan
+lewat pip) — di Windows ini sering jadi sumber masalah setup. Alternatif
+Groq Whisper API (cloud) sempat direkomendasikan sebagai opsi lebih ringan
+untuk demo hackathon. Kalau tim memutuskan pindah ke Groq, ganti isi
+_get_whisper_model() dan transcribe_audio_bytes() jadi HTTP call ke Groq,
+signature fungsi publik (transcribe_or_passthrough, dst) tidak perlu berubah.
 
 Referensi proposal Bab 15 Tech Stack: Whisper (open-source, self-host)
 """
 
-import io
 import logging
-import tempfile
 import os
+import tempfile
 from functools import lru_cache
-from typing import Optional, Union
+from typing import Optional
+
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Lazy import — Whisper berat, hanya di-import saat dibutuhkan
-_whisper_model = None
-_WHISPER_LOCK = False  # Simple flag untuk mencegah double load
 
-
-def _get_whisper_model(model_size: str = "base"):
+@lru_cache
+def _get_whisper_model(model_size: str):
     """
-    Lazy singleton untuk Whisper model.
-    Di-load hanya saat pertama kali dipanggil, lalu di-cache selamanya.
-    model_size diambil dari settings.whisper_model_path (default 'base').
+    Lazy singleton untuk Whisper model, di-cache per model_size lewat
+    functools.lru_cache (thread-safe, konsisten dengan pola get_supabase()).
     """
-    global _whisper_model, _WHISPER_LOCK
-    if _whisper_model is not None:
-        return _whisper_model
-
-    if _WHISPER_LOCK:
-        # Race condition guard sederhana
-        import time
-        time.sleep(0.5)
-        return _whisper_model
-
-    _WHISPER_LOCK = True
     try:
         import whisper
-        logger.info(f"[STT] Loading Whisper model: '{model_size}'...")
-        _whisper_model = whisper.load_model(model_size)
-        logger.info("[STT] Whisper model loaded successfully.")
-    except ImportError:
+    except ImportError as exc:
         logger.error(
-            "[STT] openai-whisper tidak terinstall. "
-            "Jalankan: pip install openai-whisper"
+            "[STT] openai-whisper tidak terinstall. Jalankan: pip install openai-whisper"
         )
-        raise
-    finally:
-        _WHISPER_LOCK = False
+        raise RuntimeError(
+            "openai-whisper tidak terinstall. Jalankan: pip install openai-whisper"
+        ) from exc
 
-    return _whisper_model
+    logger.info(f"[STT] Loading Whisper model: '{model_size}'...")
+    model = whisper.load_model(model_size)
+    logger.info("[STT] Whisper model loaded successfully.")
+    return model
 
 
 def transcribe_audio_bytes(
     audio_bytes: bytes,
     filename: str = "audio.ogg",
     language: str = "id",
-    model_size: str = "base",
+    model_size: Optional[str] = None,
 ) -> str:
     """
     Transkripsi audio dari bytes (voice note WhatsApp format .ogg / .mp4 / .wav).
@@ -75,6 +75,7 @@ def transcribe_audio_bytes(
         filename: Nama file sementara untuk inferensi tipe format (ekstensi penting!).
         language: Bahasa target. Default 'id' (Bahasa Indonesia).
         model_size: Ukuran Whisper model ('tiny', 'base', 'small', 'medium', 'large').
+            Kalau None (default), diambil dari settings.whisper_model_path.
 
     Returns:
         Teks transkripsi sebagai string.
@@ -82,9 +83,9 @@ def transcribe_audio_bytes(
     Raises:
         RuntimeError: Jika Whisper gagal load atau transkripsi gagal.
     """
-    model = _get_whisper_model(model_size)
+    effective_model_size = model_size or settings.whisper_model_path
+    model = _get_whisper_model(effective_model_size)
 
-    # Simpan ke file sementara — Whisper butuh path file, bukan bytes langsung
     suffix = os.path.splitext(filename)[-1] or ".ogg"
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp.write(audio_bytes)
@@ -94,13 +95,13 @@ def transcribe_audio_bytes(
         logger.info(f"[STT] Transcribing audio ({len(audio_bytes)} bytes, lang={language})...")
         result = model.transcribe(tmp_path, language=language, fp16=False)
         text = result.get("text", "").strip()
-        logger.info(f"[STT] Transcription result: '{text[:100]}...' (truncated)" if len(text) > 100 else f"[STT] Transcription: '{text}'")
+        preview = f"{text[:100]}..." if len(text) > 100 else text
+        logger.info(f"[STT] Transcription result: '{preview}'")
         return text
     except Exception as exc:
         logger.error(f"[STT] Transcription failed: {exc}")
         raise RuntimeError(f"Whisper transcription gagal: {exc}") from exc
     finally:
-        # Selalu bersihkan file temp
         try:
             os.unlink(tmp_path)
         except OSError:
@@ -110,7 +111,7 @@ def transcribe_audio_bytes(
 def transcribe_audio_file(
     file_path: str,
     language: str = "id",
-    model_size: str = "base",
+    model_size: Optional[str] = None,
 ) -> str:
     """
     Transkripsi audio dari path file lokal.
@@ -119,14 +120,16 @@ def transcribe_audio_file(
     with open(file_path, "rb") as f:
         audio_bytes = f.read()
     filename = os.path.basename(file_path)
-    return transcribe_audio_bytes(audio_bytes, filename=filename, language=language, model_size=model_size)
+    return transcribe_audio_bytes(
+        audio_bytes, filename=filename, language=language, model_size=model_size
+    )
 
 
 def transcribe_or_passthrough(
     text: Optional[str],
     audio_bytes: Optional[bytes],
     audio_filename: str = "audio.ogg",
-    model_size: str = "base",
+    model_size: Optional[str] = None,
 ) -> tuple[str, bool]:
     """
     Fungsi utama yang dipanggil dari whatsapp_webhook.py.

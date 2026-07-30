@@ -1,11 +1,26 @@
 """
-LARISKA AI — Sprint 4A
+LARISKA AI — Sprint 4A (QA Patch)
 Conversation State Tracking — Tahap 3 AI Pipeline
+
+Perubahan dari versi awal setelah Quality Gate review:
+- save_negotiation_log() sekarang punya GUARD eksplisit: ai_decision yang
+  bukan salah satu dari hold_price/discount/bonus/counter_offer (termasuk
+  ScoringDecisionType.NO_NEGO) TIDAK akan pernah ditulis ke database. Tanpa
+  guard ini, insert akan ditolak Postgres (CHECK constraint di schema.sql,
+  final sejak Sprint 2A) dan request gagal dengan 500 generic — skenario
+  yang SANGAT mungkin terjadi karena intent non-nego (greeting, tanya_stok,
+  dst) adalah kasus umum, bukan edge case.
+- get_or_create_customer() sekarang menangani race condition: kalau dua
+  pesan nyaris bersamaan dari nomor WA yang sama (mis. webhook retry dari
+  Meta) memicu dua insert customer baru, yang kalah race akan kena UNIQUE
+  constraint violation (whatsapp_number, schema.sql) — sebelumnya ini
+  crash, sekarang di-re-query dan tetap mengembalikan customer yang benar.
+  Pola ini sama dengan yang sudah dipakai dashboard_api.py::create_customer.
 
 Bertanggung jawab untuk:
 1. Membuat atau melanjutkan sesi percakapan (tabel `conversations`)
 2. Menyimpan setiap pesan masuk ke tabel `messages`
-3. Menyusun ConversationContext (data produk, loyalitas customer, riwayat nego) 
+3. Menyusun ConversationContext (data produk, loyalitas customer, riwayat nego)
    yang diteruskan ke Sales Brain
 4. Mencari produk yang relevan berdasarkan entitas dari intent_entity
 
@@ -31,6 +46,11 @@ from app.schemas.pipeline import (
 
 logger = logging.getLogger(__name__)
 
+# Nilai ai_decision yang diizinkan CHECK constraint negotiation_logs di
+# schema.sql (final sejak Sprint 2A) — dipakai save_negotiation_log() untuk
+# guard sebelum insert. Kalau schema.sql berubah, sinkronkan set ini.
+_VALID_DB_NEGOTIATION_DECISIONS = {"hold_price", "discount", "bonus", "counter_offer"}
+
 
 # ============================================================
 # CUSTOMER — get or create
@@ -54,14 +74,32 @@ def get_or_create_customer(supabase: Client, whatsapp_number: str) -> dict:
         logger.info(f"[StateTracking] Customer found: {res.data['id']} ({whatsapp_number})")
         return res.data
 
-    # Buat customer baru
-    new_customer = supabase.table("customers").insert({
-        "whatsapp_number": whatsapp_number,
-        "name": None,  # Akan diupdate saat pelanggan memperkenalkan diri
-    }).execute()
+    try:
+        new_customer = supabase.table("customers").insert({
+            "whatsapp_number": whatsapp_number,
+            "name": None,  # Akan diupdate saat pelanggan memperkenalkan diri
+        }).execute()
+        logger.info(f"[StateTracking] New customer created: {new_customer.data[0]['id']} ({whatsapp_number})")
+        return new_customer.data[0]
 
-    logger.info(f"[StateTracking] New customer created: {new_customer.data[0]['id']} ({whatsapp_number})")
-    return new_customer.data[0]
+    except Exception as exc:
+        # Race condition: customer sudah dibuat request lain di antara SELECT
+        # dan INSERT kita (mis. webhook retry). whatsapp_number UNIQUE
+        # constraint (schema.sql) menolak insert kedua — re-query, bukan crash.
+        if "duplicate" in str(exc).lower() or "unique" in str(exc).lower():
+            logger.warning(
+                f"[StateTracking] Race saat create customer {whatsapp_number}, re-query."
+            )
+            res = (
+                supabase.table("customers")
+                .select("id, whatsapp_number, name, created_at")
+                .eq("whatsapp_number", whatsapp_number)
+                .maybe_single()
+                .execute()
+            )
+            if res and res.data:
+                return res.data
+        raise
 
 
 # ============================================================
@@ -74,6 +112,12 @@ def get_or_create_conversation(supabase: Client, customer_id: str) -> dict:
     Jika tidak ada → buat sesi baru.
 
     Policy: satu customer hanya boleh punya satu sesi open sekaligus.
+    CATATAN: policy ini belum di-enforce lewat DB constraint (partial unique
+    index), jadi secara teori masih ada celah race condition serupa
+    get_or_create_customer kalau 2 pesan datang nyaris bersamaan. Risiko
+    rendah untuk pola pemakaian WhatsApp normal (1 nomor = 1 pesan pada satu
+    waktu) — dicatat sebagai item roadmap, bukan diperbaiki sekarang supaya
+    tidak overengineering di luar skenario yang realistis terjadi saat demo.
     """
     res = (
         supabase.table("conversations")
@@ -163,8 +207,23 @@ def save_negotiation_log(
 ) -> dict:
     """
     Catat satu putaran negosiasi ke tabel `negotiation_logs`.
-    Data ini menjadi sumber AI Evaluation Sprint 8 dan dataset retraining model di masa depan.
+    Data ini menjadi sumber AI Evaluation Sprint 8 dan dataset retraining
+    model di masa depan.
+
+    GUARD: ai_decision HARUS salah satu dari _VALID_DB_NEGOTIATION_DECISIONS
+    (sesuai CHECK constraint schema.sql). ScoringDecisionType.NO_NEGO dan
+    nilai lain di luar itu TIDAK ditulis ke database — dikembalikan dict
+    kosong, bukan exception, supaya caller (Sales Brain Sprint 5A) tidak
+    perlu try/except khusus untuk kasus normal "intent ini memang bukan
+    negosiasi, tidak perlu dicatat".
     """
+    if ai_decision not in _VALID_DB_NEGOTIATION_DECISIONS:
+        logger.debug(
+            f"[StateTracking] Skip save_negotiation_log: ai_decision='{ai_decision}' "
+            f"bukan keputusan nego valid untuk database — tidak ditulis."
+        )
+        return {}
+
     data = {
         "conversation_id": conversation_id,
         "product_id": product_id,
@@ -191,7 +250,14 @@ def find_product_by_name(supabase: Client, product_name: str) -> Optional[dict]:
     """
     Cari produk berdasarkan nama (case-insensitive partial match).
     Dipakai ketika pelanggan menyebut nama produk dalam pesan.
-    
+
+    CATATAN SCOPE: ini pencarian literal substring, BUKAN recommendation
+    engine (itu retrieval.py berbasis pgvector, Sprint 5A). Kalau ada
+    beberapa produk yang match, tidak ada ranking relevansi — hasil
+    pertama yang Postgres kembalikan yang dipakai. Cukup untuk kasus
+    pelanggan menyebut nama produk spesifik; tidak cukup untuk "carikan
+    produk yang mirip".
+
     Fallback: kalau tidak ketemu, return None dan pipeline akan minta klarifikasi.
     """
     if not product_name:

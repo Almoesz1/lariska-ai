@@ -5,29 +5,61 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.api import dashboard_api, payment_webhook, whatsapp_webhook
+# Import Core Config
 from app.core.config import settings
 
-# Setup Basic Logging
+# Import API Routers
+from app.api.dashboard_api import router as dashboard_router
+from app.api.payment_webhook import router as payment_router
+from app.api.whatsapp_webhook import router as whatsapp_router
+from app.api.sales_brain_api import router as sales_brain_router
+from app.api.bridge_api import router as bridge_router
+
+
+# ============================================================
+# LOGGING SETUP
+# ============================================================
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("lariska-ai")
 
-app = FastAPI(title="LARISKA AI Backend")
+
+# ============================================================
+# FASTAPI APP INITIALIZATION
+# ============================================================
+app = FastAPI(
+    title="LARISKA AI Backend Engine",
+    description="Core API Service for LARISKA AI — WhatsApp Sales Brain & Analytics",
+    version="1.0.0"
+)
+
+# CORS Origins Configuration (Next.js / Vite / Local React)
+origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-app.include_router(dashboard_api.router)
-app.include_router(whatsapp_webhook.router)
-app.include_router(payment_webhook.router)
+
+# ============================================================
+# REGISTER ROUTERS
+# ============================================================
+app.include_router(dashboard_router)
+app.include_router(whatsapp_router)
+app.include_router(payment_router)
+app.include_router(sales_brain_router)
+app.include_router(bridge_router)
 
 
 # ============================================================
@@ -36,7 +68,7 @@ app.include_router(payment_webhook.router)
 
 @app.exception_handler(StarletteHTTPException)
 async def http_exception_handler(request: Request, exc: StarletteHTTPException):
-    logger.warning(f"HTTPException: {exc.detail} at {request.url}")
+    logger.warning(f"HTTPException [{exc.status_code}]: {exc.detail} at {request.url}")
     return JSONResponse(
         status_code=exc.status_code,
         content={"detail": exc.detail},
@@ -54,7 +86,6 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    # Menangkap seluruh exception tidak terduga: Whisper gagal, Gemini timeout, Supabase error dll
     logger.exception(f"Unhandled Exception: {str(exc)} at {request.url}")
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -63,9 +94,22 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 
 # ============================================================
-# HEALTH CHECK
+# BASE & HEALTH CHECK ENDPOINTS
 # ============================================================
 
-@app.get("/health")
+@app.get("/", tags=["Health Check"])
+def root():
+    return {
+        "message": "LARISKA AI Engine is Active 🚀",
+        "docs": "/docs",
+        "health": "/health"
+    }
+
+
+@app.get("/health", tags=["Health Check"])
 def health():
-    return {"status": "ok", "environment": settings.environment}
+    env_name = getattr(settings, "environment", "development")
+    return {
+        "status": "ok",
+        "environment": env_name
+    }
