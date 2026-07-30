@@ -11,7 +11,7 @@ from typing import Any, Dict
 
 from google.genai import types
 
-from app.pipeline.gemini_client import get_gemini_client
+from app.pipeline.gemini_client import generate_content
 from app.schemas.pipeline import EmotionResult
 
 logger = logging.getLogger(__name__)
@@ -52,8 +52,7 @@ Selalu sesuaikan nada balasan dengan petunjuk nada emosi pembeli. Buat balasan s
 """
 
     try:
-        client = get_gemini_client()
-        response = client.models.generate_content(
+        response = generate_content(
             model=_GEMINI_MODEL,
             contents=prompt,
         )

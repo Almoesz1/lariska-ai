@@ -35,13 +35,10 @@ Referensi proposal Bab 4, Tahap 2: Intent Classification + Entity Extraction
 """
 
 import logging
-from functools import lru_cache
-
-from google import genai
 from google.genai import types
 from pydantic import BaseModel
 
-from app.core.config import settings
+from app.pipeline.gemini_client import generate_content
 from app.schemas.pipeline import EntityResult, IntentEntityResult, IntentType
 
 logger = logging.getLogger(__name__)
@@ -53,18 +50,6 @@ _GEMINI_MODEL = "gemini-3.5-flash-lite"
 # ============================================================
 # Gemini client — lazy singleton (pola konsisten dengan supabase_client.py)
 # ============================================================
-
-@lru_cache
-def _get_gemini_client() -> genai.Client:
-    api_key = settings.get_effective_google_api_key()
-    if not api_key:
-        raise RuntimeError(
-            "API key Gemini tidak ditemukan di .env. "
-            "Tambahkan GOOGLE_API_KEY=<key> atau LLM_API_KEY=<key>."
-        )
-    logger.info(f"[IntentEntity] Gemini client initialized (model={_GEMINI_MODEL}).")
-    return genai.Client(api_key=api_key)
-
 
 # ============================================================
 # Schema untuk structured output.
@@ -122,13 +107,11 @@ def extract_intent_entity(text: str) -> IntentEntityResult:
     validasi) di-fallback ke intent 'lainnya' supaya satu pesan yang sulit
     diparse tidak menjatuhkan seluruh pipeline.
     """
-    client = _get_gemini_client()
-
     preview = f"{text[:80]}..." if len(text) > 80 else text
     logger.info(f"[IntentEntity] Extracting from: '{preview}'")
 
     try:
-        response = client.models.generate_content(
+        response = generate_content(
             model=_GEMINI_MODEL,
             contents=f"{_SYSTEM_PROMPT}\n\nPesan pelanggan:\n\"{text}\"",
             config=types.GenerateContentConfig(
