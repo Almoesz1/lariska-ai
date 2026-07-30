@@ -1,130 +1,218 @@
 """
-LARISKA AI — Sprint 5A
+LARISKA AI — Sprint 5A (QA Patch)
 Model Loader — Adaptive Scoring Engine
 
-Load model LightGBM (scoring_model.pkl) dan LabelEncoder (label_encoder.pkl)
-dari artefak hasil training Sprint 3A. 
-
-Model di-load SEKALI saat server start (lazy singleton) — tidak ditraining ulang saat runtime.
-Ini sesuai proposal Bab 6: "saat live, model ini di-inference (bukan training ulang)".
-
-Path model: ml/model_artifacts/ (relatif dari root project)
+Perubahan:
+- FIX CRITICAL (C1): joblib.load() digunakan untuk membaca artefak
+  yang dibuat oleh train_scoring_model.py (joblib.dump()).
+- FIX FEATURE NAMES WARNING: Mengubah input NumPy Array menjadi pandas.DataFrame
+  dengan kolom yang sesuai feature_order untuk menghilangkan UserWarning dari Sklearn/LightGBM.
+- FIX PYDANTIC INPUT: predict_decision() sekarang mendukung input dict maupun objek ScoringInput.
+- Feature order dibaca dari training_metadata.json.
+- Warmup fail-fast.
 """
 
+import json
 import logging
-import os
-import pickle
+from functools import lru_cache
 from pathlib import Path
-from typing import Optional
+from typing import Any, Union
 
+import joblib
 import numpy as np
+import pandas as pd
 
 logger = logging.getLogger(__name__)
 
 # ============================================================
-# Path resolution
+# Path Resolution
 # ============================================================
 
-# Root project: d:/Project/lariska-ai/
-# File ini ada di: backend/app/pipeline/sales_brain/model_loader.py
-# Model ada di:   ml/model_artifacts/
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent.parent  # 5 level up
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent.parent
 _MODEL_DIR = _PROJECT_ROOT / "ml" / "model_artifacts"
 
 MODEL_PATH = _MODEL_DIR / "scoring_model.pkl"
 ENCODER_PATH = _MODEL_DIR / "label_encoder.pkl"
-
-# Lazy singletons
-_model = None
-_encoder = None
+METADATA_PATH = _MODEL_DIR / "training_metadata.json"
 
 
+# ============================================================
+# Loaders
+# ============================================================
+
+@lru_cache(maxsize=1)
 def _load_model():
-    """Load LightGBM model dari .pkl file."""
-    global _model
-    if _model is not None:
-        return _model
-
     if not MODEL_PATH.exists():
         raise FileNotFoundError(
-            f"[ModelLoader] scoring_model.pkl tidak ditemukan di {MODEL_PATH}. "
-            "Jalankan ml/train_scoring_model.py terlebih dahulu."
+            f"Model tidak ditemukan: {MODEL_PATH}"
         )
 
     logger.info(f"[ModelLoader] Loading scoring model dari {MODEL_PATH}...")
-    with open(MODEL_PATH, "rb") as f:
-        _model = pickle.load(f)
-    logger.info(f"[ModelLoader] Model loaded: {type(_model).__name__}")
-    return _model
+    model = joblib.load(MODEL_PATH)
+
+    logger.info(
+        f"[ModelLoader] Model loaded: {type(model).__name__}"
+    )
+
+    return model
 
 
+@lru_cache(maxsize=1)
 def _load_encoder():
-    """Load LabelEncoder dari .pkl file."""
-    global _encoder
-    if _encoder is not None:
-        return _encoder
-
     if not ENCODER_PATH.exists():
         raise FileNotFoundError(
-            f"[ModelLoader] label_encoder.pkl tidak ditemukan di {ENCODER_PATH}."
+            f"Encoder tidak ditemukan: {ENCODER_PATH}"
         )
 
-    logger.info(f"[ModelLoader] Loading label encoder dari {ENCODER_PATH}...")
-    with open(ENCODER_PATH, "rb") as f:
-        _encoder = pickle.load(f)
-    logger.info(f"[ModelLoader] Encoder classes: {list(_encoder.classes_)}")
-    return _encoder
+    encoder = joblib.load(ENCODER_PATH)
+
+    logger.info(
+        f"[ModelLoader] Encoder loaded: {list(encoder.classes_)}"
+    )
+
+    return encoder
+
+
+@lru_cache(maxsize=1)
+def _load_feature_order():
+    """
+    Ambil urutan fitur yang dipakai saat training.
+    """
+    if not METADATA_PATH.exists():
+        logger.warning(
+            "[ModelLoader] training_metadata.json tidak ditemukan. "
+            "Menggunakan fallback feature order."
+        )
+
+        return [
+            "margin_pct",
+            "stock_ratio",
+            "customer_loyalty",
+            "discount_requested_pct",
+            "hour_of_day",
+            "is_peak_hour",
+        ]
+
+    with open(METADATA_PATH, "r", encoding="utf-8") as f:
+        metadata = json.load(f)
+
+    feature_names = metadata.get("feature_names")
+
+    if not feature_names:
+        raise ValueError(
+            "feature_names tidak ditemukan di training_metadata.json"
+        )
+
+    logger.info(
+        f"[ModelLoader] Feature order: {feature_names}"
+    )
+
+    return feature_names
 
 
 def get_model_and_encoder():
-    """
-    Public API — ambil model + encoder yang sudah di-load.
-    Keduanya di-cache setelah load pertama.
-    """
-    model = _load_model()
-    encoder = _load_encoder()
-    return model, encoder
+    return _load_model(), _load_encoder()
 
 
-def predict_decision(features: list[float]) -> tuple[str, float]:
-    """
-    Jalankan inferensi model untuk satu baris fitur.
+# ============================================================
+# Prediction
+# ============================================================
 
+def predict_decision(
+    features: Union[dict, Any],
+) -> tuple[str, float]:
+    """
     Args:
-        features: List 6 nilai sesuai urutan feature_names di training_metadata.json:
-                  [margin_pct, stock_ratio, customer_loyalty,
-                   discount_requested_pct, hour_of_day, is_peak_hour]
+        features: dict atau objek ScoringInput yang berisi:
+        {
+            margin_pct,
+            stock_ratio,
+            customer_loyalty,
+            discount_requested_pct,
+            hour_of_day,
+            is_peak_hour
+        }
 
     Returns:
-        Tuple (decision_label: str, confidence: float)
-        decision_label adalah salah satu dari: 'hold_price', 'discount', 'bonus', 'counter_offer'
+        ("bonus", 0.918)
     """
+    # Ekstrak data ke dict jika input berupa Pydantic Model (ScoringInput)
+    if hasattr(features, "model_dump"):
+        feat_dict = features.model_dump()
+    elif hasattr(features, "dict"):
+        feat_dict = features.dict()
+    elif isinstance(features, dict):
+        feat_dict = features
+    else:
+        feat_dict = dict(features)
+
     model, encoder = get_model_and_encoder()
+    feature_order = _load_feature_order()
 
-    X = np.array(features).reshape(1, -1)
-    pred_idx = model.predict(X)[0]
-    proba = model.predict_proba(X)[0]
-    confidence = float(proba.max())
+    row = {}
+    for feature_name in feature_order:
+        if feature_name not in feat_dict:
+            raise ValueError(
+                f"Feature '{feature_name}' tidak ditemukan."
+            )
+        row[feature_name] = feat_dict[feature_name]
 
-    # Decode label index → string
+    # Buat DataFrame dengan nama kolom eksplisit untuk menghindari Warning LightGBM/Sklearn
+    X_df = pd.DataFrame([row], columns=feature_order)
+
+    pred_idx = model.predict(X_df)[0]
+
+    confidence = 1.0
+
+    if hasattr(model, "predict_proba"):
+        proba = model.predict_proba(X_df)[0]
+        confidence = float(np.max(proba))
+
     decision = encoder.inverse_transform([pred_idx])[0]
 
     logger.info(
-        f"[ModelLoader] Prediction: {decision} (confidence={confidence:.3f}) | "
-        f"features={[round(f, 3) for f in features]}"
+        f"[ModelLoader] Prediction={decision} "
+        f"(confidence={confidence:.3f})"
     )
+
     return decision, confidence
 
 
+# ============================================================
+# Startup Warmup
+# ============================================================
+
 def warmup():
     """
-    Pre-load model saat server startup — panggil dari main.py @app.on_event('startup').
-    Menghindari cold start di request pertama.
+    Dipanggil saat startup FastAPI.
+    Fail-fast jika model rusak.
     """
-    try:
-        get_model_and_encoder()
-        # Test prediction dengan dummy features
-        predict_decision([0.3, 0.8, 0.5, 0.2, 14, 0])
-        logger.info("[ModelLoader] Model warmup completed successfully.")
-    except Exception as exc:
-        logger.error(f"[ModelLoader] Warmup failed (non-fatal): {exc}")
+
+    logger.info("[ModelLoader] Warmup started...")
+
+    model, encoder = get_model_and_encoder()
+
+    if model is None:
+        raise RuntimeError(
+            "Model gagal dimuat."
+        )
+
+    if encoder is None:
+        raise RuntimeError(
+            "Encoder gagal dimuat."
+        )
+
+    predict_decision(
+        {
+            "margin_pct": 0.30,
+            "stock_ratio": 0.80,
+            "customer_loyalty": 0.50,
+            "discount_requested_pct": 0.20,
+            "hour_of_day": 14,
+            "is_peak_hour": 0,
+        }
+    )
+
+    logger.info(
+        "[ModelLoader] Warmup completed successfully."
+    )

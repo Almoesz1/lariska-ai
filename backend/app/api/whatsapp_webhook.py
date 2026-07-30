@@ -1,44 +1,26 @@
-"""
-LARISKA AI — Sprint 6
-WhatsApp Webhook — Receive & Process Incoming Messages
-
-Ini adalah INTI integrasi end-to-end LARISKA AI.
-Endpoint ini menerima semua pesan WhatsApp masuk → jalankan seluruh AI Pipeline → kirim balasan.
-
-Flow lengkap (sesuai proposal Bab 4):
-  WhatsApp masuk (teks/voice)
-    ↓ [1] STT (jika voice note)
-    ↓ [2] Intent/Entity Extraction (Gemini JSON)
-    ↓ [3] State Tracking (get/create customer & conversation, build context)
-    ↓ [4a] Scoring Engine (LightGBM + hard rules)
-    ↓ [4b] Emotion Classifier (Gemini)
-    ↓ [5] Retrieval (pgvector / category fallback)
-    ↓ [6] Response Generator (Gemini → natural language)
-    ↓ WhatsApp reply terkirim
-
-Endpoint:
-  GET /api/whatsapp/webhook — verifikasi webhook Meta (setup awal)
-  POST /api/whatsapp/webhook — terima pesan masuk
-
-Referensi proposal Bab 4: AI Pipeline, Demo Script Bab 13
-"""
-
-import asyncio
+import hmac
+import hashlib
 import logging
-from typing import Optional
+from typing import Optional, Dict, Any, Set
 
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, Response, status
+from starlette.concurrency import run_in_threadpool
 
 from app.core.config import settings
+from app.pipeline.handover import (
+    evaluate_handover,
+    execute_handover,
+    is_conversation_in_handover,
+)
 from app.pipeline.intent_entity import extract_intent_entity
 from app.pipeline.response_generator import generate_response
 from app.pipeline.retrieval import get_recommended_products, save_recommendation_log
 from app.pipeline.sales_brain import classify_emotion, run_scoring_engine
 from app.pipeline.state_tracking import (
     build_context,
+    close_conversation,
     save_message,
     save_negotiation_log,
-    close_conversation,
 )
 from app.pipeline.stt import transcribe_or_passthrough
 from app.schemas.pipeline import IntentType, ScoringDecisionType
@@ -54,9 +36,55 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/whatsapp", tags=["whatsapp"])
 
+# In-memory LRU / Cache sederhana untuk Message Deduplication saat Demo
+PROCESSED_MSG_IDS: Set[str] = set()
+MAX_CACHE_SIZE = 1000
+
+
+def _is_duplicate_message(msg_id: str) -> bool:
+    """Mengecek dan mencatat ID pesan untuk mencegah pemrosesan ganda."""
+    if not msg_id:
+        return False
+    if msg_id in PROCESSED_MSG_IDS:
+        return True
+    
+    if len(PROCESSED_MSG_IDS) >= MAX_CACHE_SIZE:
+        PROCESSED_MSG_IDS.clear()  # Clear cache jika menumpuk
+    
+    PROCESSED_MSG_IDS.add(msg_id)
+    return False
+
+
+async def _verify_signature(request: Request, raw_body: bytes) -> None:
+    """Verifikasi HMAC SHA256 Signature dari Meta."""
+    app_secret = getattr(settings, "whatsapp_app_secret", None)
+    if not app_secret:
+        return  # Skip verifikasi jika app_secret belum di-set di env
+
+    signature_header = request.headers.get("X-Hub-Signature-256", "")
+    if not signature_header or not signature_header.startswith("sha256="):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing or invalid X-Hub-Signature-256 header."
+        )
+
+    expected_signature = hmac.new(
+        key=app_secret.encode("utf-8"),
+        msg=raw_body,
+        digestmod=hashlib.sha256
+    ).hexdigest()
+
+    incoming_signature = signature_header.split("sha256=")[1]
+    if not hmac.compare_digest(expected_signature, incoming_signature):
+        logger.error("[WhatsAppWebhook] Payload signature verification failed!")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Signature payload mismatch."
+        )
+
 
 # ============================================================
-# GET — Verifikasi Webhook (Setup awal Meta Developer Console)
+# GET — Meta Webhook Verification Endpoint
 # ============================================================
 
 @router.get("/webhook")
@@ -66,173 +94,206 @@ async def verify_webhook(
     hub_verify_token: Optional[str] = Query(None, alias="hub.verify_token"),
 ):
     """
-    Verifikasi webhook WhatsApp Cloud API.
-    Meta akan GET endpoint ini saat kamu setup webhook di Developer Console.
-    Harus return hub.challenge jika verify_token cocok.
+    Verifikasi webhook dari Meta Developer Console.
+    Mewajibkan kembalian HTTP Response ber-header text/plain berisi hub.challenge.
     """
-    verify_token = settings.whatsapp_verify_token
+    verify_token = getattr(settings, "whatsapp_verify_token", None)
     if not verify_token:
+        logger.error("[WhatsAppWebhook] WHATSAPP_VERIFY_TOKEN missing in config.")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="WHATSAPP_VERIFY_TOKEN tidak dikonfigurasi."
+            detail="WHATSAPP_VERIFY_TOKEN tidak dikonfigurasi.",
         )
 
     if hub_mode == "subscribe" and hub_verify_token == verify_token:
-        logger.info("[WhatsAppWebhook] Webhook verified successfully.")
-        return int(hub_challenge)
+        logger.info("[WhatsAppWebhook] Webhook verified successfully!")
+        if hub_challenge is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Missing hub.challenge",
+            )
+        return Response(content=hub_challenge, media_type="text/plain")
 
+    logger.warning("[WhatsAppWebhook] Webhook verification failed. Token mismatch.")
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
-        detail="Verify token tidak cocok."
+        detail="Verify token tidak cocok.",
     )
 
 
 # ============================================================
-# POST — Terima & Proses Pesan Masuk
+# POST — Non-Blocking Real-Time Message Receiver
 # ============================================================
 
 @router.post("/webhook")
-async def receive_message(request: Request):
+async def receive_message(request: Request, background_tasks: BackgroundTasks):
     """
     Entry point semua pesan WhatsApp masuk.
-    Meta mengirim POST ke sini untuk setiap event (pesan, status update, dll).
-
-    Penting: Selalu return 200 OK segera, bahkan jika ada error di pipeline.
-    Jika endpoint return non-200, Meta akan retry → flood.
-    Semua error handling bersifat soft-fail.
+    Merespons HTTP 200 OK ke Meta dalam < 100ms dan menjalankan AI pipeline di BackgroundTasks.
     """
+    raw_body = await request.body()
+    
+    # 1. Verifikasi Signature (Jika app_secret terkonfigurasi)
+    try:
+        await _verify_signature(request, raw_body)
+    except HTTPException as exc:
+        raise exc
+    except Exception as exc:
+        logger.warning(f"[WhatsAppWebhook] Signature check skipped/failed: {exc}")
+
+    # 2. Parse JSON
     try:
         body = await request.json()
-    except Exception:
-        # Tetap return 200 — jangan reject webhook dari Meta
+    except Exception as exc:
+        logger.warning(f"[WhatsAppWebhook] Failed to parse JSON body: {exc}")
         return {"status": "ok"}
 
-    logger.debug(f"[WhatsAppWebhook] Payload: {str(body)[:500]}")
+    # 3. Quick Check: Abaikan jika ini hanya status update (sent/delivered/read)
+    entry = body.get("entry", [{}])[0]
+    changes = entry.get("changes", [{}])[0]
+    value = changes.get("value", {})
+    
+    if "messages" not in value or not value.get("messages"):
+        # Payload hanya status update, abaikan tanpa memicu heavy worker
+        return {"status": "ok"}
 
-    try:
-        await _process_webhook_payload(body)
-    except Exception as exc:
-        # Pipeline error → log, tapi tetap return 200
-        logger.exception(f"[WhatsAppWebhook] Pipeline error (non-fatal): {exc}")
+    logger.debug(f"[WhatsAppWebhook] Received payload from Meta: {str(body)[:200]}")
+
+    # Delegasikan eksekusi pipeline ke background task
+    background_tasks.add_task(_process_webhook_payload, body)
 
     return {"status": "ok"}
 
 
-async def _process_webhook_payload(body: dict) -> None:
-    """
-    Parse payload webhook Meta dan ekstrak data pesan masuk.
-    Meta bisa kirim multiple entries/changes dalam satu payload.
-    """
-    entries = body.get("entry", [])
-    for entry in entries:
-        changes = entry.get("changes", [])
-        for change in changes:
-            value = change.get("value", {})
+# ============================================================
+# BACKGROUND PIPELINE WORKERS
+# ============================================================
 
-            # Hanya proses event 'messages' (bukan status update, delivery, dll)
-            messages = value.get("messages", [])
-            contacts = value.get("contacts", [])
+async def _process_webhook_payload(body: Dict[str, Any]) -> None:
+    """Parse payload webhook Meta dan ekstrak data pesan masuk."""
+    try:
+        entries = body.get("entry", [])
+        for entry in entries:
+            changes = entry.get("changes", [])
+            for change in changes:
+                value = change.get("value", {})
+                messages = value.get("messages", [])
+                contacts = value.get("contacts", [])
 
-            for message in messages:
-                contact = contacts[0] if contacts else {}
-                await _handle_single_message(message, contact, value)
+                for message in messages:
+                    contact = contacts[0] if contacts else {}
+                    await _handle_single_message(message, contact, value)
+    except Exception as exc:
+        logger.exception(f"[WhatsAppWebhook] Background processing error: {exc}")
 
 
-async def _handle_single_message(message: dict, contact: dict, value: dict) -> None:
-    """
-    Proses satu pesan WhatsApp melalui seluruh AI Pipeline.
-    """
+async def _handle_single_message(message: Dict[str, Any], contact: Dict[str, Any], value: Dict[str, Any]) -> None:
+    """Proses satu pesan WhatsApp melalui seluruh AI Pipeline dengan isolasi Threadpool."""
     msg_id = message.get("id", "")
-    from_number = message.get("from", "")  # Nomor WA pengirim
-    msg_type = message.get("type", "text")  # 'text' | 'audio' | 'image' | dll
+    from_number = message.get("from", "")
+    msg_type = message.get("type", "text")
     customer_name = contact.get("profile", {}).get("name", "")
 
+    # Cek Deduplikasi Pesan (Mencegah double reply saat demo)
+    if _is_duplicate_message(msg_id):
+        logger.info(f"[WhatsAppWebhook] Duplicate message detected (id={msg_id[:8]}). Skipping.")
+        return
+
     logger.info(
-        f"[WhatsAppWebhook] Message received: "
-        f"from={from_number} type={msg_type} id={msg_id[:8]}"
+        f"[WhatsAppWebhook] Processing message: from={from_number} type={msg_type} id={msg_id[:8]}"
     )
 
-    # Mark as read segera (centang biru) — non-blocking
-    mark_message_as_read(msg_id)
+    # Mark as read (Centang Biru)
+    await mark_message_as_read(msg_id)
 
     supabase = get_supabase()
 
-    # ============================================================
-    # TAHAP 1 — STT (atau passthrough untuk teks)
-    # ============================================================
+    # ------------------------------------------------------------
+    # TAHAP 1 — Handling Audio / Voice Note & Text Extraction
+    # ------------------------------------------------------------
     raw_text = None
     audio_bytes = None
     audio_filename = "audio.ogg"
     voice_url = None
-    is_voice = False
 
     if msg_type == "text":
         raw_text = message.get("text", {}).get("body", "")
-
     elif msg_type == "audio":
-        # Voice note — download dulu, lalu STT
         audio_info = message.get("audio", {})
         media_id = audio_info.get("id")
         if media_id:
             try:
-                audio_bytes, audio_filename = download_media(media_id)
-                voice_url = f"wa_media://{media_id}"  # Reference saja, bukan URL real
+                audio_bytes, audio_filename = await download_media(media_id)
+                voice_url = f"wa_media://{media_id}"
             except Exception as exc:
-                logger.error(f"[WhatsAppWebhook] Failed to download audio: {exc}")
-                send_text_message(
+                logger.error(f"[WhatsAppWebhook] Audio download failed: {exc}")
+                await send_text_message(
                     from_number,
-                    "Maaf, voice note tidak bisa diproses saat ini. Coba kirim pesan teks ya 🙏"
+                    "Maaf, voice note tidak bisa diproses saat ini. Coba kirim pesan teks ya 🙏",
                 )
                 return
     else:
-        # Tipe pesan lain (gambar, video, dokumen) — belum didukung di MVP
-        send_text_message(
+        await send_text_message(
             from_number,
-            "Maaf, kami hanya bisa memproses pesan teks dan voice note saat ini 😊"
+            "Maaf, kami hanya dapat memproses pesan teks dan voice note saat ini 😊",
         )
         return
 
     if not raw_text and not audio_bytes:
-        logger.warning(f"[WhatsAppWebhook] Empty message from {from_number}. Skipping.")
+        logger.warning(f"[WhatsAppWebhook] Empty message payload from {from_number}. Aborting.")
         return
 
-    # STT / Passthrough
+    # STT Whisper Transcribe (Running in Threadpool)
     try:
-        text, is_voice = transcribe_or_passthrough(
+        whisper_model = getattr(settings, "whisper_model_path", "base")
+        text, is_voice = await run_in_threadpool(
+            transcribe_or_passthrough,
             text=raw_text,
             audio_bytes=audio_bytes,
             audio_filename=audio_filename,
-            model_size=settings.whisper_model_path,
+            model_size=whisper_model,
         )
     except Exception as exc:
-        logger.error(f"[WhatsAppWebhook] STT error: {exc}")
-        send_text_message(from_number, "Maaf, tidak bisa memahami voice note. Coba kirim teks ya! 🙏")
+        logger.error(f"[WhatsAppWebhook] STT Execution Error: {exc}")
+        await send_text_message(
+            from_number,
+            "Maaf, kami kesulitan memahami voice note Anda. Mohon coba kirimkan pesan teks ya! 🙏",
+        )
         return
 
-    if not text:
+    if not text or not text.strip():
+        logger.warning(f"[WhatsAppWebhook] Transcribed text is empty. Skipping.")
         return
 
-    # ============================================================
+    # ------------------------------------------------------------
     # TAHAP 2 — Intent & Entity Extraction
-    # ============================================================
-    intent_result = extract_intent_entity(text)
+    # ------------------------------------------------------------
+    intent_result = await run_in_threadpool(extract_intent_entity, text)
 
-    # ============================================================
-    # TAHAP 3 — State Tracking (build context dari database)
-    # ============================================================
-    context = build_context(supabase, from_number, intent_result)
+    # ------------------------------------------------------------
+    # TAHAP 3 — Emotion Classifier
+    # ------------------------------------------------------------
+    emotion_result = await run_in_threadpool(classify_emotion, text)
 
-    # Update nama customer jika baru diketahui
-    if customer_name and not context.customer_name:
+    # ------------------------------------------------------------
+    # TAHAP 4 — State Tracking & Context Building
+    # ------------------------------------------------------------
+    context = await run_in_threadpool(build_context, supabase, from_number, intent_result)
+
+    if customer_name and getattr(context, "customer_name", None) != customer_name:
         try:
-            supabase.table("customers").update({"name": customer_name}).eq(
-                "id", context.customer_id
-            ).execute()
-        except Exception:
-            pass
+            await run_in_threadpool(
+                lambda: supabase.table("customers")
+                .update({"name": customer_name})
+                .eq("id", context.customer_id)
+                .execute()
+            )
+        except Exception as exc:
+            logger.debug(f"[WhatsAppWebhook] Customer name update non-fatal error: {exc}")
 
-    # Simpan pesan customer ke database
-    save_message(
+    # Simpan pesan pelanggan ke Database
+    await run_in_threadpool(
+        save_message,
         supabase=supabase,
         conversation_id=context.conversation_id,
         sender_type="customer",
@@ -241,32 +302,57 @@ async def _handle_single_message(message: dict, contact: dict, value: dict) -> N
         voice_url=voice_url,
         intent=intent_result.intent.value,
         entities=intent_result.entities.model_dump(),
-        sentiment=None,  # Akan diisi setelah emotion classifier
+        sentiment=emotion_result.emotion.value,
     )
 
-    # ============================================================
-    # TAHAP 4a — Scoring Engine (Adaptive Scoring — Inti AI)
-    # ============================================================
-    scoring_decision = run_scoring_engine(context, intent_result)
+    # ------------------------------------------------------------
+    # TAHAP 4b — Handover & Escalation Check (Human-in-the-Loop)
+    # ------------------------------------------------------------
+    already_handover = await run_in_threadpool(
+        is_conversation_in_handover, supabase, context.conversation_id
+    )
+    if already_handover:
+        logger.info(
+            f"[WhatsAppWebhook] Percakapan {context.conversation_id[:8]} dalam mode handover. AI standby."
+        )
+        return
 
-    # ============================================================
-    # TAHAP 4b — Emotion Classifier
-    # ============================================================
-    emotion_result = classify_emotion(text)
+    handover_eval = await run_in_threadpool(
+        evaluate_handover, intent_result=intent_result, context=context
+    )
+    if handover_eval.should_handover:
+        await run_in_threadpool(
+            execute_handover,
+            supabase=supabase,
+            conversation_id=context.conversation_id,
+            evaluation=handover_eval,
+        )
+        
+        handover_msg = (
+            "Baik Kak, terima kasih atas informasinya 🙏\n\n"
+            "Pesan Kakak sudah kami teruskan ke Tim CS/Admin kami. "
+            "Mohon tunggu sebentar ya, tim kami akan segera membalas!"
+        )
+        await send_text_message(from_number, handover_msg)
 
-    # Update sentiment di database (update message terakhir yang baru disimpan)
-    try:
-        supabase.table("messages").update(
-            {"sentiment": emotion_result.emotion.value}
-        ).eq("conversation_id", context.conversation_id).order(
-            "created_at", desc=True
-        ).limit(1).execute()
-    except Exception:
-        pass  # Non-fatal
+        await run_in_threadpool(
+            save_message,
+            supabase=supabase,
+            conversation_id=context.conversation_id,
+            sender_type="ai",
+            content_type="text",
+            raw_text=handover_msg,
+        )
+        return
 
-    # ============================================================
-    # TAHAP 5 — Retrieval (Rekomendasi produk)
-    # ============================================================
+    # ------------------------------------------------------------
+    # TAHAP 5a — Adaptive Scoring Engine (LightGBM)
+    # ------------------------------------------------------------
+    scoring_decision = await run_in_threadpool(run_scoring_engine, context, intent_result)
+
+    # ------------------------------------------------------------
+    # TAHAP 5b — Product Retrieval & Recommendations (pgvector)
+    # ------------------------------------------------------------
     recommended_products = []
     should_recommend = intent_result.intent in (
         IntentType.REKOMENDASI,
@@ -276,27 +362,30 @@ async def _handle_single_message(message: dict, contact: dict, value: dict) -> N
 
     if should_recommend or (
         intent_result.intent == IntentType.NEGO
-        and scoring_decision.decision in (ScoringDecisionType.DISCOUNT, ScoringDecisionType.BONUS)
+        and getattr(scoring_decision, "decision", None)
+        in (ScoringDecisionType.DISCOUNT, ScoringDecisionType.BONUS)
     ):
-        recommended_products = get_recommended_products(
+        recommended_products = await run_in_threadpool(
+            get_recommended_products,
             customer_id=context.customer_id,
             current_product_id=context.product_id,
             current_category=context.product_category,
             limit=3,
         )
-        # Log rekomendasi untuk evaluasi Sprint 8
         for prod in recommended_products:
-            save_recommendation_log(
+            await run_in_threadpool(
+                save_recommendation_log,
                 customer_id=context.customer_id,
                 product_id=prod["id"],
                 conversation_id=context.conversation_id,
                 reason=f"intent={intent_result.intent.value}",
             )
 
-    # ============================================================
-    # TAHAP 6 — Response Generator
-    # ============================================================
-    reply_text = generate_response(
+    # ------------------------------------------------------------
+    # TAHAP 6 — Sales Response Generator (Gemini)
+    # ------------------------------------------------------------
+    reply_text = await run_in_threadpool(
+        generate_response,
         context=context,
         intent_result=intent_result,
         emotion_result=emotion_result,
@@ -304,26 +393,30 @@ async def _handle_single_message(message: dict, contact: dict, value: dict) -> N
         recommended_products=recommended_products,
     )
 
-    # ============================================================
-    # Simpan log negosiasi (jika intent nego)
-    # ============================================================
-    if intent_result.intent == IntentType.NEGO and context.product_id:
-        save_negotiation_log(
+    # Log negosiasi jika ada penawaran harga
+    if intent_result.intent == IntentType.NEGO and getattr(context, "product_id", None):
+        offered_p = getattr(intent_result.entities, "offered_price", None)
+        final_p = getattr(scoring_decision, "final_price", None)
+        floor_p = getattr(context, "product_floor_price", 0.0) or 0.0
+        conf_score = getattr(scoring_decision, "model_confidence", 0.0)
+        dec_val = getattr(scoring_decision.decision, "value", "hold_price") if scoring_decision else "hold_price"
+
+        await run_in_threadpool(
+            save_negotiation_log,
             supabase=supabase,
             conversation_id=context.conversation_id,
             product_id=context.product_id,
-            customer_offer_price=intent_result.entities.offered_price,
-            ai_decision=scoring_decision.decision.value,
-            ai_offer_price=scoring_decision.final_price if scoring_decision.final_price else None,
-            floor_price_snapshot=context.product_floor_price or 0.0,
-            model_confidence=scoring_decision.model_confidence,
-            outcome="pending",  # Akan diupdate saat checkout
+            customer_offer_price=offered_p,
+            ai_decision=dec_val,
+            ai_offer_price=final_p,
+            floor_price_snapshot=floor_p,
+            model_confidence=conf_score,
+            outcome="pending",
         )
 
-    # ============================================================
-    # Simpan pesan AI ke database
-    # ============================================================
-    save_message(
+    # Simpan balasan AI
+    await run_in_threadpool(
+        save_message,
         supabase=supabase,
         conversation_id=context.conversation_id,
         sender_type="ai",
@@ -331,11 +424,10 @@ async def _handle_single_message(message: dict, contact: dict, value: dict) -> N
         raw_text=reply_text,
     )
 
-    # ============================================================
-    # Kirim balasan ke WhatsApp
-    # ============================================================
-    if intent_result.intent == IntentType.CHECKOUT and context.product_id:
-        # Intent checkout → langsung buat order + payment link
+    # ------------------------------------------------------------
+    # TAHAP 7 — Delivery: Reply / Midtrans Checkout
+    # ------------------------------------------------------------
+    if intent_result.intent == IntentType.CHECKOUT and getattr(context, "product_id", None):
         await _handle_checkout(
             supabase=supabase,
             from_number=from_number,
@@ -344,99 +436,107 @@ async def _handle_single_message(message: dict, contact: dict, value: dict) -> N
             reply_text=reply_text,
         )
     else:
-        # Balasan teks biasa
-        send_text_message(from_number, reply_text)
+        await send_text_message(from_number, reply_text)
 
-    # Tutup conversation jika checkout selesai
+    # Tutup percakapan setelah checkout dipicu
     if intent_result.intent == IntentType.CHECKOUT:
         try:
-            close_conversation(supabase, context.conversation_id)
+            await run_in_threadpool(close_conversation, supabase, context.conversation_id)
         except Exception as exc:
-            logger.warning(f"[WhatsAppWebhook] Failed to close conversation: {exc}")
+            logger.warning(f"[WhatsAppWebhook] Non-fatal close conversation error: {exc}")
 
     logger.info(
-        f"[WhatsAppWebhook] Pipeline complete: "
-        f"from={from_number} "
-        f"intent={intent_result.intent.value} "
-        f"emotion={emotion_result.emotion.value} "
-        f"decision={scoring_decision.decision.value if scoring_decision else 'none'}"
+        f"[WhatsAppWebhook] Pipeline finished successfully for {from_number} | "
+        f"Intent={intent_result.intent.value} | Emotion={emotion_result.emotion.value}"
     )
 
 
-async def _handle_checkout(supabase, from_number: str, context, scoring_decision, reply_text: str) -> None:
-    """
-    Handle intent checkout: buat order di database + kirim QRIS payment link.
-    """
-    if not context.product_id or not context.product_price:
-        send_text_message(from_number, reply_text)
+async def _handle_checkout(
+    supabase: Any, from_number: str, context: Any, scoring_decision: Any, reply_text: str
+) -> None:
+    """Menangani Intent Checkout: Buat order & panggil Midtrans QRIS payment."""
+    if not getattr(context, "product_id", None) or not getattr(context, "product_price", None):
+        await send_text_message(from_number, reply_text)
         return
 
     try:
-        # Hitung harga final
         unit_price = context.product_price
-        discount_amount = scoring_decision.discount_amount if scoring_decision else 0.0
-        total = unit_price - discount_amount
+        discount_amount = getattr(scoring_decision, "discount_amount", 0.0) or 0.0
+        total = max(1.0, unit_price - discount_amount)
 
-        # Buat order
-        order_res = supabase.table("orders").insert({
-            "customer_id": context.customer_id,
-            "conversation_id": context.conversation_id,
-            "product_id": context.product_id,
-            "quantity": 1,
-            "unit_price": unit_price,
-            "discount_amount": discount_amount,
-            "total_amount": total,
-            "status": "pending",
-        }).execute()
+        # 1. Insert Order
+        order_res = await run_in_threadpool(
+            lambda: supabase.table("orders")
+            .insert(
+                {
+                    "customer_id": context.customer_id,
+                    "conversation_id": context.conversation_id,
+                    "product_id": context.product_id,
+                    "quantity": 1,
+                    "unit_price": unit_price,
+                    "discount_amount": discount_amount,
+                    "total_amount": total,
+                    "status": "pending",
+                }
+            )
+            .execute()
+        )
 
         order_id = order_res.data[0]["id"]
 
-        # Buat payment via Midtrans
+        # 2. Midtrans Payment Client Call
         from app.services.payment_client import create_qris_payment
-        payment_result = create_qris_payment(
+
+        cust_name = getattr(context, "customer_name", None) or "Pelanggan"
+        prod_name = getattr(context, "product_name", None) or "Produk"
+
+        payment_result = await run_in_threadpool(
+            create_qris_payment,
             order_id=order_id,
             amount=total,
-            customer_name=context.customer_name or "Pelanggan",
+            customer_name=cust_name,
             customer_phone=from_number,
-            product_name=context.product_name or "Produk",
+            product_name=prod_name,
             quantity=1,
         )
 
-        # Simpan payment record
-        supabase.table("payments").insert({
-            "order_id": order_id,
-            "method": "qris",
-            "status": "pending",
-            "amount": total,
-            "provider_reference": payment_result["midtrans_order_id"],
-        }).execute()
+        # 3. Insert Payment Record
+        await run_in_threadpool(
+            lambda: supabase.table("payments")
+            .insert(
+                {
+                    "order_id": order_id,
+                    "method": "qris",
+                    "status": "pending",
+                    "amount": total,
+                    "provider_reference": payment_result.get("midtrans_order_id", order_id),
+                }
+            )
+            .execute()
+        )
 
-        # Kirim reply teks dulu
-        send_text_message(from_number, reply_text)
+        # 4. Kirim teks konfirmasi
+        await send_text_message(from_number, reply_text)
 
-        # Kirim CTA button dengan link QRIS
+        # 5. Kirim Tombol Interactive CTA Link QRIS
         invoice_text = (
             f"🧾 *Invoice #{order_id[:8].upper()}*\n"
-            f"Produk: {context.product_name}\n"
-            f"Harga: Rp{total:,.0f}\n\n"
-            f"Silakan bayar via QRIS 👇"
+            f"Produk: {prod_name}\n"
+            f"Total Pembayaran: Rp{total:,.0f}\n\n"
+            f"Klik tombol di bawah ini untuk membayar via QRIS/Transfer 👇"
         )
-        send_interactive_cta(
+        await send_interactive_cta(
             to=from_number,
             body_text=invoice_text,
             button_label="Bayar Sekarang 💳",
-            payment_url=payment_result["payment_url"],
+            payment_url=payment_result.get("payment_url", "https://lariska.ai/pay"),
         )
 
-        logger.info(
-            f"[WhatsAppWebhook] Checkout complete: "
-            f"order={order_id[:8]} amount=Rp{total:,.0f}"
-        )
+        logger.info(f"[WhatsAppWebhook] Checkout flow succeeded for order: #{order_id[:8]}")
 
     except Exception as exc:
-        logger.error(f"[WhatsAppWebhook] Checkout error: {exc}")
-        # Fallback: kirim balasan teks saja tanpa payment link
-        send_text_message(
+        logger.error(f"[WhatsAppWebhook] Checkout processing error: {exc}", exc_info=True)
+        await send_text_message(
             from_number,
-            f"{reply_text}\n\n(Mohon maaf, sistem pembayaran sedang gangguan. Tim kami akan menghubungi Anda segera 🙏)"
+            f"{reply_text}\n\n(Mohon maaf, terjadi kendala saat menyiapkan tautan pembayaran. Tim kami akan segera menghubungi Anda 🙏)",
         )

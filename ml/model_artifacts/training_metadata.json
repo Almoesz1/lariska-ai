@@ -4,8 +4,8 @@
   "dataset_rows": 5000,
   "train_size": 4000,
   "test_size": 1000,
-  "training_time_seconds": 2.3748,
-  "timestamp": "2026-07-18T17:38:32.099131+00:00",
+  "training_time_seconds": 2.6219,
+  "timestamp": "2026-07-29T04:54:12.791445+00:00",
   "random_state": 42,
   "test_split_ratio": 0.2,
   "feature_names": [
