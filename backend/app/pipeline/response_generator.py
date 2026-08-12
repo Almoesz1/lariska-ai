@@ -20,6 +20,7 @@ from typing import Optional
 
 from google.genai import types
 
+from app.core.config import settings
 from app.pipeline.gemini_client import generate_content
 from app.schemas.pipeline import (
     ConversationContext,
@@ -178,9 +179,10 @@ def generate_response(
         f"decision={scoring_decision.decision.value if scoring_decision else 'none'}"
     )
 
+    model_name = getattr(settings, "gemini_model", "gemini-3.5-flash-lite")
     try:
         response = generate_content(
-            model="gemini-2.0-flash",
+            model=model_name,
             contents=prompt,
             config=types.GenerateContentConfig(
                 temperature=0.7,
