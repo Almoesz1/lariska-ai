@@ -2,7 +2,11 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { gsap } from 'gsap';
+<<<<<<< HEAD
 import { ArrowRight, Mail, Lock, Eye, EyeOff } from 'lucide-react';
+=======
+import { Bot, ArrowRight, Mail, Lock, Eye, EyeOff } from 'lucide-react';
+>>>>>>> 1bbde33 (update login page)
 import Link from 'next/link';
 import Image from 'next/image';
 import { useRouter } from 'next/navigation';
