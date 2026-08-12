@@ -2,6 +2,7 @@
 
 import React from 'react';
 import Link from 'next/link';
+import Image from 'next/image';
 import { Bot } from 'lucide-react';
 
 export default function ProductsPage() {
@@ -12,10 +13,9 @@ export default function ProductsPage() {
       <div className="absolute bottom-[-10%] right-[-10%] w-[50%] h-[50%] rounded-full bg-indigo-300/20 blur-[120px]" />
 
       {/* Header */}
-      <div className="absolute top-8 left-8 flex items-center gap-2">
-        <Link href="/" className="flex items-center gap-2 hover:opacity-80 transition-opacity">
-          <Bot className="w-8 h-8 text-indigo-600" />
-          <span className="text-2xl font-bold tracking-tight text-indigo-950">LARISKA<span className="text-indigo-600">.</span></span>
+      <div className="absolute top-0 left-8 flex items-center">
+        <Link href="/" className="flex items-center hover:opacity-80 transition-opacity">
+          <Image src="/logo.png" alt="Lariska" width={500} height={150} className="w-auto h-[120px] -mt-8" priority />
         </Link>
       </div>
 
