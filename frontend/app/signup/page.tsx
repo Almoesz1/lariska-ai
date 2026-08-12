@@ -1,19 +1,36 @@
 "use client";
 
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { gsap } from 'gsap';
-import { Bot, ArrowRight, Mail, Lock, User } from 'lucide-react';
+import { Bot, ArrowRight, Mail, Lock, User, Eye, EyeOff } from 'lucide-react';
 import Link from 'next/link';
+import Image from 'next/image';
+import { useRouter } from 'next/navigation';
 
 export default function SignupPage() {
   const cardRef = useRef<HTMLDivElement>(null);
+  const router = useRouter();
+  const [isHovered, setIsHovered] = useState(false);
+  const [isToggled, setIsToggled] = useState(false);
+  const [name, setName] = useState("Manager kopdes");
+  const [email, setEmail] = useState("admin@lariska.ai");
+  const [password, setPassword] = useState("password123");
+
+  const showPassword = isHovered || isToggled;
 
   useEffect(() => {
-    gsap.fromTo(cardRef.current, 
+    gsap.fromTo(cardRef.current,
       { y: 40, opacity: 0 },
       { y: 0, opacity: 1, duration: 1, ease: 'power3.out' }
     );
   }, []);
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    localStorage.setItem("user_name", name);
+    localStorage.setItem("user_email", email);
+    router.push('/products');
+  };
 
   return (
     <div className="min-h-screen bg-[#F8F9FF] font-sans text-slate-900 relative flex items-center justify-center overflow-hidden">
@@ -22,10 +39,9 @@ export default function SignupPage() {
       <div className="absolute bottom-[-10%] left-[-10%] w-[50%] h-[50%] rounded-full bg-indigo-300/20 blur-[120px]" />
 
       {/* Navbar/Logo */}
-      <div className="absolute top-8 left-8 flex items-center gap-2">
-        <Link href="/" className="flex items-center gap-2 hover:opacity-80 transition-opacity">
-          <Bot className="w-8 h-8 text-indigo-600" />
-          <span className="text-2xl font-bold tracking-tight text-indigo-950">LARISKA<span className="text-indigo-600">.</span></span>
+      <div className="absolute top-8 left-8 flex items-center">
+        <Link href="/" className="flex items-center hover:opacity-80 transition-opacity">
+          <Image src="/logo.png" alt="Lariska" width={500} height={150} className="w-auto h-[120px]" priority />
         </Link>
       </div>
 
@@ -36,17 +52,19 @@ export default function SignupPage() {
             <p className="text-slate-600">Start automating your sales today</p>
           </div>
 
-          <form className="space-y-5" onSubmit={(e) => e.preventDefault()}>
+          <form className="space-y-5" onSubmit={handleSubmit}>
             <div className="space-y-2">
               <label className="text-sm font-medium text-slate-700 block">Full Name</label>
               <div className="relative">
                 <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
                   <User className="h-5 w-5 text-slate-400" />
                 </div>
-                <input 
-                  type="text" 
-                  className="w-full pl-10 pr-4 py-3 bg-white/50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all text-slate-700" 
-                  placeholder="John Doe" 
+                <input
+                  type="text"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  className="w-full pl-10 pr-4 py-3 bg-white/50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all text-slate-700"
+                  placeholder="Username"
                 />
               </div>
             </div>
@@ -57,10 +75,12 @@ export default function SignupPage() {
                 <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
                   <Mail className="h-5 w-5 text-slate-400" />
                 </div>
-                <input 
-                  type="email" 
-                  className="w-full pl-10 pr-4 py-3 bg-white/50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all text-slate-700" 
-                  placeholder="you@company.com" 
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="w-full pl-10 pr-4 py-3 bg-white/50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all text-slate-700"
+                  placeholder="you@company.com"
                 />
               </div>
             </div>
@@ -71,11 +91,22 @@ export default function SignupPage() {
                 <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
                   <Lock className="h-5 w-5 text-slate-400" />
                 </div>
-                <input 
-                  type="password" 
-                  className="w-full pl-10 pr-4 py-3 bg-white/50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all text-slate-700" 
-                  placeholder="••••••••" 
+                <input
+                  type={showPassword ? "text" : "password"}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="w-full pl-10 pr-12 py-3 bg-white/50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all text-slate-700"
+                  placeholder="••••••••"
                 />
+                <button
+                  type="button"
+                  onMouseEnter={() => setIsHovered(true)}
+                  onMouseLeave={() => setIsHovered(false)}
+                  onClick={() => setIsToggled(!isToggled)}
+                  className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600 transition-colors cursor-pointer"
+                >
+                  {showPassword ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
+                </button>
               </div>
             </div>
 
