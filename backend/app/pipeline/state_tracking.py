@@ -1,21 +1,6 @@
 """
-LARISKA AI — Sprint 4A (QA Patch)
+LARISKA AI — Sprint 4A (QA Patch Refined)
 Conversation State Tracking — Tahap 3 AI Pipeline
-
-Perubahan dari versi awal setelah Quality Gate review:
-- save_negotiation_log() sekarang punya GUARD eksplisit: ai_decision yang
-  bukan salah satu dari hold_price/discount/bonus/counter_offer (termasuk
-  ScoringDecisionType.NO_NEGO) TIDAK akan pernah ditulis ke database. Tanpa
-  guard ini, insert akan ditolak Postgres (CHECK constraint di schema.sql,
-  final sejak Sprint 2A) dan request gagal dengan 500 generic — skenario
-  yang SANGAT mungkin terjadi karena intent non-nego (greeting, tanya_stok,
-  dst) adalah kasus umum, bukan edge case.
-- get_or_create_customer() sekarang menangani race condition: kalau dua
-  pesan nyaris bersamaan dari nomor WA yang sama (mis. webhook retry dari
-  Meta) memicu dua insert customer baru, yang kalah race akan kena UNIQUE
-  constraint violation (whatsapp_number, schema.sql) — sebelumnya ini
-  crash, sekarang di-re-query dan tetap mengembalikan customer yang benar.
-  Pola ini sama dengan yang sudah dipakai dashboard_api.py::create_customer.
 
 Bertanggung jawab untuk:
 1. Membuat atau melanjutkan sesi percakapan (tabel `conversations`)
@@ -24,10 +9,9 @@ Bertanggung jawab untuk:
    yang diteruskan ke Sales Brain
 4. Mencari produk yang relevan berdasarkan entitas dari intent_entity
 
-Prinsip: state tracking bersifat stateless per-call — semua state disimpan di Supabase,
-bukan di memory aplikasi. Ini penting untuk horizontal scaling dan demo yang reliable.
+Prinsip: state tracking bersifat stateless per-call — semua state disimpan di Supabase.
 
-Referensi proposal Bab 4, Tahap 3: Conversation State Tracking (disimpan di database per nomor WA)
+Referensi proposal Bab 4, Tahap 3: Conversation State Tracking
 """
 
 import logging
@@ -39,16 +23,12 @@ from supabase import Client
 from app.schemas.pipeline import (
     ConversationContext,
     IntentEntityResult,
-    IntentType,
-    EmotionType,
     ScoringDecisionType,
 )
 
 logger = logging.getLogger(__name__)
 
-# Nilai ai_decision yang diizinkan CHECK constraint negotiation_logs di
-# schema.sql (final sejak Sprint 2A) — dipakai save_negotiation_log() untuk
-# guard sebelum insert. Kalau schema.sql berubah, sinkronkan set ini.
+# Nilai ai_decision yang diizinkan CHECK constraint negotiation_logs di schema.sql
 _VALID_DB_NEGOTIATION_DECISIONS = {"hold_price", "discount", "bonus", "counter_offer"}
 
 
@@ -59,7 +39,6 @@ _VALID_DB_NEGOTIATION_DECISIONS = {"hold_price", "discount", "bonus", "counter_o
 def get_or_create_customer(supabase: Client, whatsapp_number: str) -> dict:
     """
     Ambil customer berdasarkan nomor WA, atau buat baru jika belum ada.
-    Ini titik entry setiap pesan WhatsApp masuk.
     """
     res = (
         supabase.table("customers")
@@ -83,9 +62,7 @@ def get_or_create_customer(supabase: Client, whatsapp_number: str) -> dict:
         return new_customer.data[0]
 
     except Exception as exc:
-        # Race condition: customer sudah dibuat request lain di antara SELECT
-        # dan INSERT kita (mis. webhook retry). whatsapp_number UNIQUE
-        # constraint (schema.sql) menolak insert kedua — re-query, bukan crash.
+        # Race condition: whatsapp_number UNIQUE constraint -> re-query
         if "duplicate" in str(exc).lower() or "unique" in str(exc).lower():
             logger.warning(
                 f"[StateTracking] Race saat create customer {whatsapp_number}, re-query."
@@ -109,15 +86,7 @@ def get_or_create_customer(supabase: Client, whatsapp_number: str) -> dict:
 def get_or_create_conversation(supabase: Client, customer_id: str) -> dict:
     """
     Ambil sesi percakapan yang sedang aktif (status='open') untuk customer ini.
-    Jika tidak ada → buat sesi baru.
-
-    Policy: satu customer hanya boleh punya satu sesi open sekaligus.
-    CATATAN: policy ini belum di-enforce lewat DB constraint (partial unique
-    index), jadi secara teori masih ada celah race condition serupa
-    get_or_create_customer kalau 2 pesan datang nyaris bersamaan. Risiko
-    rendah untuk pola pemakaian WhatsApp normal (1 nomor = 1 pesan pada satu
-    waktu) — dicatat sebagai item roadmap, bukan diperbaiki sekarang supaya
-    tidak overengineering di luar skenario yang realistis terjadi saat demo.
+    Jika tidak ada -> buat sesi baru.
     """
     res = (
         supabase.table("conversations")
@@ -160,7 +129,7 @@ def close_conversation(supabase: Client, conversation_id: str) -> None:
 def save_message(
     supabase: Client,
     conversation_id: str,
-    sender_type: str,  # 'customer' | 'ai' | 'admin'
+    sender_type: str,   # 'customer' | 'ai' | 'admin'
     content_type: str,  # 'text' | 'voice'
     raw_text: Optional[str] = None,
     voice_url: Optional[str] = None,
@@ -170,7 +139,6 @@ def save_message(
 ) -> dict:
     """
     Simpan satu pesan ke tabel `messages`.
-    Kolom intent/entities/sentiment diisi setelah pipeline selesai (untuk pesan dari customer).
     """
     data = {
         "conversation_id": conversation_id,
@@ -207,15 +175,7 @@ def save_negotiation_log(
 ) -> dict:
     """
     Catat satu putaran negosiasi ke tabel `negotiation_logs`.
-    Data ini menjadi sumber AI Evaluation Sprint 8 dan dataset retraining
-    model di masa depan.
-
-    GUARD: ai_decision HARUS salah satu dari _VALID_DB_NEGOTIATION_DECISIONS
-    (sesuai CHECK constraint schema.sql). ScoringDecisionType.NO_NEGO dan
-    nilai lain di luar itu TIDAK ditulis ke database — dikembalikan dict
-    kosong, bukan exception, supaya caller (Sales Brain Sprint 5A) tidak
-    perlu try/except khusus untuk kasus normal "intent ini memang bukan
-    negosiasi, tidak perlu dicatat".
+    GUARD: ai_decision HARUS salah satu dari _VALID_DB_NEGOTIATION_DECISIONS.
     """
     if ai_decision not in _VALID_DB_NEGOTIATION_DECISIONS:
         logger.debug(
@@ -237,7 +197,7 @@ def save_negotiation_log(
     res = supabase.table("negotiation_logs").insert(data).execute()
     logger.info(
         f"[StateTracking] Negotiation log: decision={ai_decision} "
-        f"offer={customer_offer_price} → ai={ai_offer_price}"
+        f"offer={customer_offer_price} -> ai={ai_offer_price}"
     )
     return res.data[0]
 
@@ -249,16 +209,6 @@ def save_negotiation_log(
 def find_product_by_name(supabase: Client, product_name: str) -> Optional[dict]:
     """
     Cari produk berdasarkan nama (case-insensitive partial match).
-    Dipakai ketika pelanggan menyebut nama produk dalam pesan.
-
-    CATATAN SCOPE: ini pencarian literal substring, BUKAN recommendation
-    engine (itu retrieval.py berbasis pgvector, Sprint 5A). Kalau ada
-    beberapa produk yang match, tidak ada ranking relevansi — hasil
-    pertama yang Postgres kembalikan yang dipakai. Cukup untuk kasus
-    pelanggan menyebut nama produk spesifik; tidak cukup untuk "carikan
-    produk yang mirip".
-
-    Fallback: kalau tidak ketemu, return None dan pipeline akan minta klarifikasi.
     """
     if not product_name:
         return None
@@ -284,7 +234,6 @@ def find_product_by_name(supabase: Client, product_name: str) -> Optional[dict]:
 def get_customer_order_count(supabase: Client, customer_id: str) -> int:
     """
     Hitung total order historis pelanggan (untuk skor loyalitas).
-    Dipakai sebagai fitur input Adaptive Scoring Engine.
     """
     res = (
         supabase.table("orders")
@@ -301,7 +250,6 @@ def get_customer_order_count(supabase: Client, customer_id: str) -> int:
 def get_negotiation_round(supabase: Client, conversation_id: str) -> int:
     """
     Hitung berapa kali nego sudah terjadi dalam sesi ini.
-    Dipakai untuk membatasi putaran nego (policy bisnis).
     """
     res = (
         supabase.table("negotiation_logs")
@@ -341,13 +289,6 @@ def build_context(
     """
     Entry point utama State Tracking.
     Dipanggil dari whatsapp_webhook.py setelah intent_entity selesai.
-
-    Langkah:
-    1. Get/create customer
-    2. Get/create conversation
-    3. Lookup produk dari entitas
-    4. Hitung loyalitas & riwayat nego
-    5. Return ConversationContext lengkap untuk Sales Brain
     """
     # Step 1: Customer
     customer = get_or_create_customer(supabase, whatsapp_number)
@@ -359,7 +300,6 @@ def build_context(
 
     # Step 3: Hitung loyalitas (0.0 - 1.0 berdasarkan jumlah order)
     total_orders = get_customer_order_count(supabase, customer_id)
-    # Skala loyalitas: 0 order = 0.0, 10+ order = 1.0 (capped)
     customer_loyalty = min(total_orders / 10.0, 1.0)
 
     # Step 4: Lookup produk jika disebutkan
@@ -384,12 +324,13 @@ def build_context(
         whatsapp_number=whatsapp_number,
         customer_name=customer.get("name"),
         total_orders=total_orders,
+        customer_loyalty=customer_loyalty,  # Terpasang presisi ke Schema
         product_id=product["id"] if product else None,
         product_name=product["name"] if product else None,
-        product_price=float(product["price"]) if product else None,
-        product_floor_price=float(product["floor_price"]) if product else None,
-        product_stock=product["stock"] if product else None,
-        product_category=product["category"] if product else None,
+        product_price=float(product["price"]) if product and product.get("price") is not None else None,
+        product_floor_price=float(product["floor_price"]) if product and product.get("floor_price") is not None else None,
+        product_stock=product.get("stock") if product else None,
+        product_category=product.get("category") if product else None,
         negotiation_round=negotiation_round,
         last_ai_decision=last_decision,
     )

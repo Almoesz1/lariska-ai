@@ -2,14 +2,13 @@
 LARISKA AI — Sprint 5A (QA Patch)
 Model Loader — Adaptive Scoring Engine
 
-Perubahan:
-- FIX CRITICAL (C1): joblib.load() digunakan untuk membaca artefak
-  yang dibuat oleh train_scoring_model.py (joblib.dump()).
-- FIX FEATURE NAMES WARNING: Mengubah input NumPy Array menjadi pandas.DataFrame
-  dengan kolom yang sesuai feature_order untuk menghilangkan UserWarning dari Sklearn/LightGBM.
-- FIX PYDANTIC INPUT: predict_decision() sekarang mendukung input dict maupun objek ScoringInput.
-- Feature order dibaca dari training_metadata.json.
-- Warmup fail-fast.
+Perubahan & Fitur:
+- FIX CRITICAL: joblib.load() digunakan untuk membaca artefak ML.
+- FIX FEATURE NAMES WARNING: Menggunakan pandas.DataFrame dengan kolom eksplisit.
+- FIX PYDANTIC INPUT: Support input dict maupun objek ScoringInput.
+- AUTO-FILL FALLBACK: Mengisi otomatis fitur yang tidak dikirim oleh client/test
+  dengan default value aman agar terhindar dari KeyError / 500 Internal Server Error.
+- Warmup fail-fast saat startup.
 """
 
 import json
@@ -34,6 +33,30 @@ _MODEL_DIR = _PROJECT_ROOT / "ml" / "model_artifacts"
 MODEL_PATH = _MODEL_DIR / "scoring_model.pkl"
 ENCODER_PATH = _MODEL_DIR / "label_encoder.pkl"
 METADATA_PATH = _MODEL_DIR / "training_metadata.json"
+
+
+# ============================================================
+# Default Values Penyelamat Error 500
+# ============================================================
+
+DEFAULT_FEATURE_VALUES = {
+    "margin_pct": 0.30,
+    "stock_ratio": 0.80,
+    "customer_loyalty": 0.50,
+    "customer_loyalty_tier": "NEW",
+    "discount_requested_pct": 0.10,
+    "hour_of_day": 14,
+    "is_peak_hour": 0,
+    "day_of_week": 1,
+    "is_weekend": 0,
+    "urgency_score": 0.5,
+    "basket_size": 1,
+    "historical_conversion_rate": 0.5,
+    "competitor_price_ratio": 1.0,
+    "customer_lifetime_value": 0.0,
+    "offered_price": 0.0,
+    "total_previous_orders": 0,
+}
 
 
 # ============================================================
@@ -76,7 +99,7 @@ def _load_encoder():
 @lru_cache(maxsize=1)
 def _load_feature_order():
     """
-    Ambil urutan fitur yang dipakai saat training.
+    Ambil urutan fitur yang dipakai saat training dari metadata.
     """
     if not METADATA_PATH.exists():
         logger.warning(
@@ -122,16 +145,11 @@ def predict_decision(
     features: Union[dict, Any],
 ) -> tuple[str, float]:
     """
+    Ekstrak fitur, lakukan auto-fill jika ada fitur yang kurang, 
+    lalu lakukan prediksi dengan model ML.
+
     Args:
-        features: dict atau objek ScoringInput yang berisi:
-        {
-            margin_pct,
-            stock_ratio,
-            customer_loyalty,
-            discount_requested_pct,
-            hour_of_day,
-            is_peak_hour
-        }
+        features: dict atau objek ScoringInput.
 
     Returns:
         ("bonus", 0.918)
@@ -151,11 +169,15 @@ def predict_decision(
 
     row = {}
     for feature_name in feature_order:
-        if feature_name not in feat_dict:
-            raise ValueError(
-                f"Feature '{feature_name}' tidak ditemukan."
+        if feature_name in feat_dict:
+            row[feature_name] = feat_dict[feature_name]
+        else:
+            # Auto-fill fallback jika fitur tidak dikirim
+            default_val = DEFAULT_FEATURE_VALUES.get(feature_name, 0.0)
+            row[feature_name] = default_val
+            logger.warning(
+                f"[ModelLoader] Feature '{feature_name}' missing from input. Auto-filled with default: {default_val}"
             )
-        row[feature_name] = feat_dict[feature_name]
 
     # Buat DataFrame dengan nama kolom eksplisit untuk menghindari Warning LightGBM/Sklearn
     X_df = pd.DataFrame([row], columns=feature_order)

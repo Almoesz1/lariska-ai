@@ -1,27 +1,26 @@
 """
-LARISKA AI — Sprint 4C
-Payment Webhook — Midtrans Callback Handler
+LARISKA AI — Backend Payment Webhook
+File: app/api/payment_webhook.py
 
-Endpoint yang dipanggil Midtrans saat status pembayaran berubah.
-Saat pelanggan bayar QRIS → Midtrans POST ke sini → update tabel payments + orders + inventory_logs.
-
-Setup requirements:
-- URL harus publik: gunakan ngrok saat development (contoh: https://xxxx.ngrok.io/api/payment/webhook)
-- Daftarkan URL ini di Midtrans Dashboard > Settings > Payment > Notification URL
-- SIGNATURE_KEY validasi: SHA512(order_id + status_code + gross_amount + server_key)
-
-Referensi proposal Bab 5 Tier 1: Invoice + QRIS sandbox, loop transaksi lengkap
+Endpoint webhook callback Midtrans & endpoint manual creation payment.
+Mengintegrasikan:
+1. Validasi SHA512 Signature Key Midtrans.
+2. Update tabel payments & orders di Supabase.
+3. Otomasi pemotongan stok di products + pencatatan audit di inventory_logs.
+4. Otomasi pengiriman notifikasi konfirmasi pembayaran via WhatsApp Client ke pelanggan.
 """
 
 import hashlib
 import logging
 from datetime import datetime, timezone
+from typing import Any, Dict
 
 from fastapi import APIRouter, HTTPException, Request, status
 
 from app.core.config import settings
-from app.services.payment_client import parse_midtrans_status
+from app.services.payment_client import create_qris_payment, parse_midtrans_status
 from app.services.supabase_client import get_supabase
+from app.services.whatsapp_client import WhatsAppClient
 
 logger = logging.getLogger(__name__)
 
@@ -39,13 +38,14 @@ def _verify_midtrans_signature(
     received_signature: str,
 ) -> bool:
     """
-    Verifikasi bahwa notifikasi benar-benar dari Midtrans (bukan replay attack).
-    Formula: SHA512(order_id + status_code + gross_amount + server_key)
+    Verifikasi bahwa notifikasi berasal resmi dari Midtrans.
+    Formula Midtrans: SHA512(order_id + status_code + gross_amount + server_key)
     """
-    server_key = settings.midtrans_server_key or ""
+    server_key = getattr(settings, "midtrans_server_key", None) or getattr(settings, "MIDTRANS_SERVER_KEY", "")
     raw_string = f"{order_id}{status_code}{gross_amount}{server_key}"
-    expected = hashlib.sha512(raw_string.encode()).hexdigest()
-    is_valid = expected == received_signature
+    expected = hashlib.sha512(raw_string.encode("utf-8")).hexdigest()
+    
+    is_valid = expected.lower() == received_signature.lower()
     if not is_valid:
         logger.warning(
             f"[PaymentWebhook] Invalid signature for order_id={order_id}. "
@@ -55,21 +55,21 @@ def _verify_midtrans_signature(
 
 
 # ============================================================
-# Webhook Endpoint
+# Webhook Endpoint (Midtrans Callback)
 # ============================================================
 
 @router.post("/webhook")
-async def midtrans_webhook(request: Request):
+async def midtrans_webhook(request: Request) -> Dict[str, Any]:
     """
-    Terima notifikasi pembayaran dari Midtrans.
+    Callback handler dari Midtrans ketika status transaksi berubah.
 
-    Flow setelah payment sukses:
-    1. Verifikasi signature Midtrans
-    2. Cari payment record berdasarkan provider_reference (midtrans order_id)
-    3. Update payments.status
-    4. Update orders.status jadi 'paid'
-    5. Kurangi products.stock + catat inventory_logs
-    6. Return 200 OK (Midtrans retry kalau dapat status lain)
+    Alur ketika status = 'success':
+    1. Verifikasi Signature SHA512 Midtrans.
+    2. Cek payment record di Supabase (by provider_reference).
+    3. Update status di tabel payments.
+    4. Update status di tabel orders menjadi 'paid'.
+    5. Potong stok produk di tabel products & catat audit di inventory_logs.
+    6. Ambil kontak pelanggan & kirim notifikasi WhatsApp otomatis.
     """
     try:
         data = await request.json()
@@ -79,32 +79,32 @@ async def midtrans_webhook(request: Request):
             detail="Request body bukan JSON valid"
         )
 
-    logger.info(f"[PaymentWebhook] Received: {data}")
+    logger.info(f"[PaymentWebhook] Received notification: {data}")
 
-    order_id = data.get("order_id", "")
-    transaction_status = data.get("transaction_status", "")
-    status_code = data.get("status_code", "")
-    gross_amount = data.get("gross_amount", "")
-    signature_key = data.get("signature_key", "")
+    order_id = str(data.get("order_id", ""))
+    transaction_status = str(data.get("transaction_status", ""))
+    status_code = str(data.get("status_code", ""))
+    gross_amount = str(data.get("gross_amount", ""))
+    signature_key = str(data.get("signature_key", ""))
     fraud_status = data.get("fraud_status")
 
-    # --- Validasi signature ---
+    # 1. Validasi Signature
     if not _verify_midtrans_signature(order_id, status_code, gross_amount, signature_key):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Signature tidak valid"
         )
 
-    # --- Konversi ke internal status ---
+    # 2. Konversi ke status internal LARISKA
     internal_status = parse_midtrans_status(transaction_status, fraud_status)
     logger.info(
-        f"[PaymentWebhook] order_id={order_id} "
-        f"midtrans_status={transaction_status} → internal={internal_status}"
+        f"[PaymentWebhook] order_id={order_id} | "
+        f"midtrans_status={transaction_status} -> internal={internal_status}"
     )
 
     supabase = get_supabase()
 
-    # --- Cari payment record berdasarkan provider_reference ---
+    # 3. Cari payment record berdasarkan provider_reference (Midtrans Order ID)
     payment_res = (
         supabase.table("payments")
         .select("id, order_id, status, amount")
@@ -114,45 +114,45 @@ async def midtrans_webhook(request: Request):
     )
 
     if not payment_res.data:
-        # Payment record belum ada — ini bisa terjadi saat initial notification
-        # Coba cari order berdasarkan order_id format "LARISKA-XXXXXXXX"
         logger.warning(
-            f"[PaymentWebhook] Payment record not found for {order_id}. "
-            "Skipping (order may not have been created yet)."
+            f"[PaymentWebhook] Payment record tidak ditemukan untuk provider_reference={order_id}. "
+            "Skipping processing."
         )
-        # Return 200 agar Midtrans tidak retry terus
         return {"status": "ok", "message": "payment record not found, skipped"}
 
     payment = payment_res.data
     payment_id = payment["id"]
     lariska_order_id = payment["order_id"]
 
-    # Idempotent: jika status sudah final, tidak perlu update lagi
+    # 4. Idempotency Check: Jika status transaksi sudah final, tidak perlu diproses ulang
     if payment["status"] in ("success", "failed", "expired"):
-        logger.info(f"[PaymentWebhook] Payment {payment_id} already in final state: {payment['status']}. Skipping.")
+        logger.info(
+            f"[PaymentWebhook] Payment {payment_id} sudah berada pada status final: {payment['status']}. Skipped."
+        )
         return {"status": "ok", "message": "already processed"}
 
     now_iso = datetime.now(timezone.utc).isoformat()
 
-    # --- Update payments ---
+    # 5. Update status di tabel payments
     supabase.table("payments").update({
         "status": internal_status,
         "paid_at": now_iso if internal_status == "success" else None,
     }).eq("id", payment_id).execute()
-    logger.info(f"[PaymentWebhook] Payment {payment_id} updated to {internal_status}")
 
-    # --- Jika sukses: update order + kurangi stok ---
+    logger.info(f"[PaymentWebhook] Status payment {payment_id} berhasil diubah ke '{internal_status}'")
+
+    # 6. Jalankan Logika Bisnis Ketika Pembayaran Sukses
     if internal_status == "success":
-        # Update order status
+        # A. Update status order menjadi 'paid'
         supabase.table("orders").update({
             "status": "paid",
         }).eq("id", lariska_order_id).execute()
-        logger.info(f"[PaymentWebhook] Order {lariska_order_id} marked as paid")
+        logger.info(f"[PaymentWebhook] Status order {lariska_order_id} diperbarui menjadi 'paid'")
 
-        # Ambil detail order untuk update stok
+        # B. Ambil detail order
         order_res = (
             supabase.table("orders")
-            .select("product_id, quantity")
+            .select("product_id, quantity, customer_id, total_amount")
             .eq("id", lariska_order_id)
             .maybe_single()
             .execute()
@@ -161,26 +161,30 @@ async def midtrans_webhook(request: Request):
         if order_res.data:
             product_id = order_res.data["product_id"]
             qty_sold = order_res.data["quantity"]
+            customer_id = order_res.data["customer_id"]
+            total_amount = float(order_res.data.get("total_amount", 0))
 
-            # Ambil stok saat ini
+            # C. Update Stok Produk & Inventory Log
             prod_res = (
                 supabase.table("products")
-                .select("stock")
+                .select("name, stock")
                 .eq("id", product_id)
                 .maybe_single()
                 .execute()
             )
 
+            product_name = "Produk LARISKA"
             if prod_res.data:
-                stock_before = prod_res.data["stock"]
-                stock_after = max(stock_before - qty_sold, 0)  # Tidak boleh negatif
+                product_name = prod_res.data.get("name", product_name)
+                stock_before = prod_res.data.get("stock", 0)
+                stock_after = max(stock_before - qty_sold, 0)
 
-                # Update stok produk
+                # Update Stok
                 supabase.table("products").update({
                     "stock": stock_after
                 }).eq("id", product_id).execute()
 
-                # Catat inventory_log
+                # Insert Inventory Log
                 supabase.table("inventory_logs").insert({
                     "product_id": product_id,
                     "change_type": "sale",
@@ -191,26 +195,48 @@ async def midtrans_webhook(request: Request):
                 }).execute()
 
                 logger.info(
-                    f"[PaymentWebhook] Inventory updated: "
-                    f"product={product_id[:8]} "
-                    f"stock {stock_before} → {stock_after}"
+                    f"[PaymentWebhook] Inventory diperbarui: product={product_id[:8]} "
+                    f"| Stok: {stock_before} -> {stock_after}"
                 )
+
+            # D. Kirim Notifikasi Konfirmasi via WhatsApp
+            customer_res = (
+                supabase.table("customers")
+                .select("whatsapp_number, name")
+                .eq("id", customer_id)
+                .maybe_single()
+                .execute()
+            )
+
+            if customer_res.data and customer_res.data.get("whatsapp_number"):
+                wa_number = customer_res.data["whatsapp_number"]
+                cust_name = customer_res.data.get("name") or "Kak"
+
+                try:
+                    wa_client = WhatsAppClient()
+                    success_message = (
+                        f"Halo {cust_name}! 🎉\n\n"
+                        f"Pembayaran Anda untuk *{product_name}* ({qty_sold}x) "
+                        f"sebesar *Rp {total_amount:,.0f}* telah berhasil kami terima!\n\n"
+                        f"Pesanan Anda sedang diproses oleh tim kami. Terima kasih banyak telah berbelanja di LARISKA! 😊"
+                    )
+                    await wa_client.send_text(to=wa_number, text=success_message)
+                    logger.info(f"[PaymentWebhook] Notifikasi WA berhasil dikirim ke {wa_number}")
+                except Exception as wa_err:
+                    logger.error(f"[PaymentWebhook] Gagal mengirim notifikasi WA ke {wa_number}: {str(wa_err)}")
 
     return {"status": "ok"}
 
 
 # ============================================================
-# Manual trigger untuk create payment (dipanggil dari WhatsApp flow)
+# Endpoint Trigger Manual Create Payment
 # ============================================================
 
 @router.post("/create")
-async def create_payment_for_order(request: Request):
+async def create_payment_for_order(request: Request) -> Dict[str, Any]:
     """
-    Buat payment record dan return QRIS URL untuk dikirim ke pelanggan WA.
-    Dipanggil saat AI pipeline memutuskan checkout.
-
-    Body:
-        order_id: UUID order yang sudah ada di tabel orders
+    Membuat payment record & memicu integrasi Midtrans untuk menghasilkan URL QRIS.
+    Dipanggil dari pipeline Sales Brain AI saat konfirmasi checkout.
     """
     try:
         body = await request.json()
@@ -219,11 +245,11 @@ async def create_payment_for_order(request: Request):
         raise HTTPException(status_code=400, detail="Body JSON tidak valid")
 
     if not order_id:
-        raise HTTPException(status_code=400, detail="order_id diperlukan")
+        raise HTTPException(status_code=400, detail="Parameter order_id wajib diisi")
 
     supabase = get_supabase()
 
-    # Ambil order + customer + product
+    # 1. Ambil Data Order
     order_res = (
         supabase.table("orders")
         .select("id, customer_id, product_id, quantity, total_amount, status")
@@ -238,9 +264,10 @@ async def create_payment_for_order(request: Request):
     if order["status"] != "pending":
         raise HTTPException(
             status_code=400,
-            detail=f"Order berstatus '{order['status']}', hanya order 'pending' yang bisa dibayar."
+            detail=f"Order berstatus '{order['status']}'. Hanya order berstatus 'pending' yang dapat dibayar."
         )
 
+    # 2. Ambil Data Customer & Produk
     customer_res = (
         supabase.table("customers")
         .select("name, whatsapp_number")
@@ -259,9 +286,7 @@ async def create_payment_for_order(request: Request):
     )
     product = product_res.data or {}
 
-    # Import di sini untuk menghindari circular import
-    from app.services.payment_client import create_qris_payment
-
+    # 3. Panggil Midtrans Client Service
     payment_result = create_qris_payment(
         order_id=order_id,
         amount=float(order["total_amount"]),
@@ -273,7 +298,7 @@ async def create_payment_for_order(request: Request):
 
     midtrans_order_id = payment_result["midtrans_order_id"]
 
-    # Simpan payment record ke database
+    # 4. Insert Payment Record ke Supabase
     supabase.table("payments").insert({
         "order_id": order_id,
         "method": "qris",
@@ -282,12 +307,12 @@ async def create_payment_for_order(request: Request):
         "provider_reference": midtrans_order_id,
     }).execute()
 
-    logger.info(f"[PaymentWebhook] Payment record created for order {order_id}")
+    logger.info(f"[PaymentWebhook] Payment record berhasil dibuat untuk order_id={order_id}")
 
     return {
         "order_id": order_id,
         "payment_url": payment_result["payment_url"],
         "midtrans_order_id": midtrans_order_id,
         "amount": float(order["total_amount"]),
-        "message": f"Silakan bayar via link berikut: {payment_result['payment_url']}",
+        "message": f"Silakan lakukan pembayaran via link berikut: {payment_result['payment_url']}",
     }

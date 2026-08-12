@@ -1,4 +1,11 @@
+"""
+LARISKA AI Engine — Main FastAPI Application Entry Point
+File: app/main.py
+"""
+
 import logging
+import os
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -27,12 +34,56 @@ logger = logging.getLogger("lariska-ai")
 
 
 # ============================================================
+# STARTUP VALIDATOR
+# ============================================================
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Validasi konfigurasi kritis saat startup."""
+    # --- WhatsApp ---
+    phone_id = (
+        os.getenv("WHATSAPP_PHONE_NUMBER_ID")
+        or getattr(settings, "whatsapp_phone_number_id", None)
+    )
+    if not phone_id:
+        logger.critical(
+            "[STARTUP] ⛔ WHATSAPP_PHONE_NUMBER_ID belum di-set di .env!\n"
+            "Tanpa ini, LARISKA AI tidak bisa membalas pesan WhatsApp apapun.\n"
+            "Cek: Meta Developer Console → WhatsApp → API Setup → Phone Number ID"
+        )
+    else:
+        logger.info(f"[STARTUP] ✅ WhatsApp Phone Number ID: {phone_id}")
+
+    wa_token = os.getenv("WHATSAPP_TOKEN") or getattr(settings, "whatsapp_token", None)
+    if not wa_token:
+        logger.critical("[STARTUP] ⛔ WHATSAPP_TOKEN belum di-set di .env!")
+    else:
+        masked = f"{wa_token[:12]}...{wa_token[-6:]}" if len(wa_token) > 18 else "SET"
+        logger.info(f"[STARTUP] ✅ WhatsApp Token: {masked}")
+
+    # --- Gemini ---
+    gemini_key = settings.get_effective_google_api_key()
+    if not gemini_key:
+        logger.critical(
+            "[STARTUP] ⛔ GEMINI_API_KEY / GOOGLE_API_KEY tidak ditemukan di .env!\n"
+            "Tanpa ini, semua modul AI (intent, emotion, response) tidak bisa berjalan."
+        )
+    else:
+        logger.info(f"[STARTUP] ✅ Gemini API Key ditemukan, model={settings.gemini_model}")
+
+    logger.info("[STARTUP] 🚀 LARISKA AI Backend siap.")
+    yield
+    logger.info("[STARTUP] 🛑 LARISKA AI Backend shutdown.")
+
+
+# ============================================================
 # FASTAPI APP INITIALIZATION
 # ============================================================
 app = FastAPI(
     title="LARISKA AI Backend Engine",
     description="Core API Service for LARISKA AI — WhatsApp Sales Brain & Analytics",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan,
 )
 
 # CORS Origins Configuration (Next.js / Vite / Local React)
@@ -41,6 +92,7 @@ origins = [
     "http://127.0.0.1:3000",
     "http://localhost:5173",
     "http://127.0.0.1:5173",
+    "*"  # Mempermudah testing webhook via Ngrok
 ]
 
 app.add_middleware(
