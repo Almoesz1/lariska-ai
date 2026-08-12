@@ -7,7 +7,7 @@ import { Search, User, Clock, CheckCircle2, ChevronRight, PackageOpen, Sparkles,
 const mockCustomers = [
   {
     id: "CUST-001",
-    name: "Budi Santoso",
+    name: "Ihsan",
     phone: "+62 812-3456-7890",
     loyaltyScore: 8.5,
     totalOrders: 12,
@@ -23,7 +23,7 @@ const mockCustomers = [
   },
   {
     id: "CUST-002",
-    name: "Siti Aminah",
+    name: "Mustofa",
     phone: "+62 813-9876-5432",
     loyaltyScore: 9.2,
     totalOrders: 24,
@@ -37,7 +37,7 @@ const mockCustomers = [
   },
   {
     id: "CUST-003",
-    name: "Andi Wijaya",
+    name: "Lugas",
     phone: "+62 856-1122-3344",
     loyaltyScore: 4.0,
     totalOrders: 2,
@@ -55,8 +55,8 @@ export default function CustomersPage() {
   const [selectedCustomer, setSelectedCustomer] = useState(mockCustomers[0]);
   const [searchTerm, setSearchTerm] = useState("");
 
-  const filteredCustomers = mockCustomers.filter(c => 
-    c.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
+  const filteredCustomers = mockCustomers.filter(c =>
+    c.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
     c.phone.includes(searchTerm)
   );
 
@@ -64,8 +64,8 @@ export default function CustomersPage() {
     <div className="h-full flex flex-col gap-6">
       <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-4xl font-serif font-bold text-indigo-950 mb-2">Customers</h1>
-          <p className="text-slate-600">Manage your customer relationships and view AI insights.</p>
+          <h1 className="text-3xl font-semibold text-indigo-950 mb-1">Customers</h1>
+          <p className="text-slate-500 text-xs font-normal">Manage your customer relationships and view AI insights.</p>
         </div>
       </div>
 
@@ -73,11 +73,11 @@ export default function CustomersPage() {
         {/* Customer List (Left Pane) */}
         <div className="w-1/3 bg-white/60 backdrop-blur-md border border-white rounded-3xl p-6 shadow-xl flex flex-col">
           <div className="relative mb-6">
-            <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
+            <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
             <input 
               type="text"
               placeholder="Search customers..."
-              className="w-full pl-11 pr-4 py-3 bg-white/50 border border-white/80 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all placeholder:text-slate-400"
+              className="w-full pl-10 pr-4 py-2.5 bg-white/50 border border-white/80 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#715bc9]/20 transition-all placeholder:text-slate-400 text-xs font-normal"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
             />
@@ -85,25 +85,23 @@ export default function CustomersPage() {
 
           <div className="flex-1 overflow-y-auto space-y-3 pr-2 custom-scrollbar">
             {filteredCustomers.map(customer => (
-              <div 
+              <div
                 key={customer.id}
                 onClick={() => setSelectedCustomer(customer)}
-                className={`p-4 rounded-2xl cursor-pointer transition-all duration-200 border ${
-                  selectedCustomer.id === customer.id 
-                    ? "bg-indigo-600 text-white border-indigo-500 shadow-lg shadow-indigo-200" 
-                    : "bg-white/40 border-white/60 hover:bg-white hover:shadow-md text-slate-800"
+                className={`p-4 rounded-2xl cursor-pointer transition-all border ${
+                  selectedCustomer.id === customer.id
+                    ? "bg-white border-2 border-[#715bc9] shadow-md shadow-[#715bc9]/15 text-indigo-950"
+                    : "bg-white/50 border-white/80 hover:bg-white hover:shadow-md text-slate-800"
                 }`}
               >
-                <div className="flex justify-between items-start mb-2">
-                  <h3 className="font-bold text-lg">{customer.name}</h3>
-                  <div className={`text-xs px-2 py-1 rounded-full font-medium ${
-                    selectedCustomer.id === customer.id ? "bg-indigo-500 text-white" : "bg-indigo-100 text-indigo-700"
-                  }`}>
+                <div className="flex justify-between items-center mb-1">
+                  <h3 className="font-semibold text-sm text-indigo-950">{customer.name}</h3>
+                  <span className="text-xs font-medium px-2.5 py-0.5 rounded-full bg-[#715bc9]/10 text-[#715bc9]">
                     {customer.loyaltyScore} Score
-                  </div>
+                  </span>
                 </div>
-                <div className="flex items-center gap-2 text-sm opacity-80">
-                  <Phone className="w-4 h-4" />
+                <div className="flex items-center gap-2 text-xs text-slate-500 font-normal">
+                  <Phone className="w-3.5 h-3.5" />
                   <span>{customer.phone}</span>
                 </div>
               </div>
@@ -116,26 +114,26 @@ export default function CustomersPage() {
           {selectedCustomer ? (
             <div className="space-y-8 relative">
               {/* Profile Header */}
-              <div className="flex items-start justify-between pb-6 border-b border-indigo-100">
+              <div className="flex items-start justify-between pb-6 border-b border-slate-100">
                 <div className="flex items-center gap-5">
-                  <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shadow-lg shadow-indigo-200">
-                    <User className="w-10 h-10 text-white" />
+                  <div className="w-20 h-20 rounded-2xl bg-[#715bc9] text-white flex items-center justify-center shadow-lg shadow-[#715bc9]/25 font-semibold text-3xl">
+                    {selectedCustomer.name[0]}
                   </div>
                   <div>
-                    <h2 className="text-3xl font-serif font-bold text-indigo-950">{selectedCustomer.name}</h2>
-                    <p className="text-slate-500 text-lg flex items-center gap-2 mt-1">
-                      <Phone className="w-5 h-5" /> {selectedCustomer.phone}
+                    <h2 className="text-2xl font-semibold text-indigo-950">{selectedCustomer.name}</h2>
+                    <p className="text-slate-500 text-xs font-normal flex items-center gap-2 mt-1">
+                      <Phone className="w-4 h-4 text-[#715bc9]" /> {selectedCustomer.phone}
                     </p>
                   </div>
                 </div>
                 <div className="flex gap-4 text-center">
-                  <div className="bg-white/50 backdrop-blur-sm px-4 py-3 rounded-xl border border-white shadow-sm">
-                    <p className="text-slate-500 text-sm font-medium">Total Orders</p>
-                    <p className="text-2xl font-bold text-indigo-900">{selectedCustomer.totalOrders}</p>
+                  <div className="bg-white/80 backdrop-blur-sm px-4 py-3 rounded-xl border border-slate-200/80 shadow-sm">
+                    <p className="text-slate-500 text-[10px] font-semibold uppercase tracking-wider">Total Orders</p>
+                    <p className="text-xl font-semibold text-indigo-950">{selectedCustomer.totalOrders}</p>
                   </div>
-                  <div className="bg-white/50 backdrop-blur-sm px-4 py-3 rounded-xl border border-white shadow-sm">
-                    <p className="text-slate-500 text-sm font-medium">Last Active</p>
-                    <p className="text-lg font-bold text-indigo-900 mt-1">{selectedCustomer.lastActive}</p>
+                  <div className="bg-white/80 backdrop-blur-sm px-4 py-3 rounded-xl border border-slate-200/80 shadow-sm">
+                    <p className="text-slate-500 text-[10px] font-semibold uppercase tracking-wider">Last Active</p>
+                    <p className="text-xs font-medium text-[#715bc9] mt-1">{selectedCustomer.lastActive}</p>
                   </div>
                 </div>
               </div>
@@ -143,19 +141,18 @@ export default function CustomersPage() {
               {/* AI Recommendations */}
               <div>
                 <div className="flex items-center gap-2 mb-4">
-                  <Sparkles className="w-6 h-6 text-purple-600" />
-                  <h3 className="text-xl font-bold text-indigo-950">AI Recommendations</h3>
+                  <Sparkles className="w-5 h-5 text-[#715bc9]" />
+                  <h3 className="text-xl font-semibold text-indigo-950">AI Recommendations</h3>
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   {selectedCustomer.recommendations.map((rec, idx) => (
-                    <div key={idx} className="bg-gradient-to-br from-purple-50 to-indigo-50 border border-indigo-100 rounded-2xl p-5 shadow-sm hover:shadow-md transition-shadow relative overflow-hidden group">
-                      <div className="absolute top-0 right-0 w-24 h-24 bg-white/40 rounded-full blur-2xl -mr-10 -mt-10 group-hover:bg-purple-200/40 transition-colors" />
+                    <div key={idx} className="bg-white/90 border border-slate-200/80 rounded-2xl p-5 shadow-sm hover:shadow-md transition-shadow relative overflow-hidden group">
                       <div className="flex justify-between items-start mb-2 relative z-10">
-                        <h4 className="font-bold text-indigo-900 text-lg">{rec.product}</h4>
-                        <span className="bg-purple-100 text-purple-700 text-xs px-2 py-1 rounded-full font-bold">{rec.match} Match</span>
+                        <h4 className="font-semibold text-indigo-950 text-sm">{rec.product}</h4>
+                        <span className="bg-[#715bc9]/10 text-[#715bc9] text-xs px-2.5 py-0.5 rounded-full font-medium">{rec.match} Match</span>
                       </div>
-                      <p className="text-slate-600 text-sm relative z-10">{rec.reason}</p>
-                      <button className="mt-4 text-sm font-semibold text-indigo-600 flex items-center gap-1 group-hover:gap-2 transition-all">
+                      <p className="text-slate-600 text-xs font-normal relative z-10">{rec.reason}</p>
+                      <button className="mt-4 text-xs font-medium text-[#715bc9] flex items-center gap-1 group-hover:gap-2 transition-all cursor-pointer">
                         Pitch to Customer <ChevronRight className="w-4 h-4" />
                       </button>
                     </div>
@@ -166,39 +163,39 @@ export default function CustomersPage() {
               {/* Transaction History / Memory */}
               <div>
                 <div className="flex items-center gap-2 mb-4">
-                  <Clock className="w-6 h-6 text-indigo-600" />
-                  <h3 className="text-xl font-bold text-indigo-950">Historical Context & Memory</h3>
+                  <Clock className="w-5 h-5 text-[#715bc9]" />
+                  <h3 className="text-xl font-semibold text-indigo-950">Historical Context & Memory</h3>
                 </div>
-                <div className="bg-white/50 border border-white rounded-2xl overflow-hidden shadow-sm">
+                <div className="bg-white/90 border border-slate-200/80 rounded-2xl overflow-hidden shadow-sm">
                   <table className="w-full text-left border-collapse">
                     <thead>
-                      <tr className="bg-indigo-50/50 text-indigo-900 border-b border-indigo-100 text-sm">
-                        <th className="px-6 py-4 font-semibold">Order ID</th>
-                        <th className="px-6 py-4 font-semibold">Product</th>
-                        <th className="px-6 py-4 font-semibold">Final Price</th>
-                        <th className="px-6 py-4 font-semibold text-center">Nego Rounds</th>
-                        <th className="px-6 py-4 font-semibold">Status</th>
+                      <tr className="bg-slate-50 text-indigo-950 border-b border-slate-100 text-xs font-bold uppercase tracking-wider">
+                        <th className="px-6 py-4">Order ID</th>
+                        <th className="px-6 py-4">Product</th>
+                        <th className="px-6 py-4">Final Price</th>
+                        <th className="px-6 py-4 text-center">Nego Rounds</th>
+                        <th className="px-6 py-4">Status</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-indigo-50">
+                    <tbody className="divide-y divide-slate-100 text-sm">
                       {selectedCustomer.history.map((tx) => (
-                        <tr key={tx.id} className="hover:bg-white/60 transition-colors text-slate-700">
-                          <td className="px-6 py-4 font-medium">{tx.id}</td>
-                          <td className="px-6 py-4 flex items-center gap-2">
+                        <tr key={tx.id} className="hover:bg-slate-50/80 transition-colors text-slate-700">
+                          <td className="px-6 py-4 font-mono font-bold text-[#715bc9]">{tx.id}</td>
+                          <td className="px-6 py-4 flex items-center gap-2 font-medium">
                             <PackageOpen className="w-4 h-4 text-slate-400" /> {tx.product}
                           </td>
-                          <td className="px-6 py-4 font-semibold text-slate-900">{tx.finalPrice}</td>
+                          <td className="px-6 py-4 font-bold text-slate-900">{tx.finalPrice}</td>
                           <td className="px-6 py-4 text-center">
-                            <span className="bg-slate-100 text-slate-600 px-2 py-1 rounded-md text-xs font-bold">{tx.rounds}</span>
+                            <span className="bg-slate-100 text-slate-700 px-2 py-1 rounded-md text-xs font-bold">{tx.rounds}</span>
                           </td>
                           <td className="px-6 py-4">
                             {tx.status === 'completed' ? (
-                              <span className="flex items-center gap-1 text-emerald-600 bg-emerald-50 px-2 py-1 rounded-md text-xs font-semibold w-fit">
-                                <CheckCircle2 className="w-3 h-3" /> Completed
+                              <span className="flex items-center gap-1 text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-full text-xs font-bold w-fit">
+                                <CheckCircle2 className="w-3.5 h-3.5" /> Completed
                               </span>
                             ) : (
-                              <span className="flex items-center gap-1 text-amber-600 bg-amber-50 px-2 py-1 rounded-md text-xs font-semibold w-fit">
-                                <Clock className="w-3 h-3" /> Negotiating
+                              <span className="flex items-center gap-1 text-amber-700 bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-full text-xs font-bold w-fit">
+                                <Clock className="w-3.5 h-3.5" /> Negotiating
                               </span>
                             )}
                           </td>
