@@ -1,219 +1,32 @@
 "use client";
 
-import React, { useState } from "react";
-import { Search, User, Clock, CheckCircle2, ChevronRight, PackageOpen, Sparkles, Phone } from "lucide-react";
+import { useMemo, useState } from "react";
+import { AlertCircle, Clock3, HeartHandshake, Package, Phone, RefreshCw, Search, ShoppingBag, Sparkles, UserRound } from "lucide-react";
+import { useCustomers } from "@/hooks/useCustomers";
+import { useOrders } from "@/hooks/useOrders";
+import { useProducts } from "@/hooks/useProducts";
 
-// Mock Data
-const mockCustomers = [
-  {
-    id: "CUST-001",
-    name: "Ihsan",
-    phone: "+62 812-3456-7890",
-    loyaltyScore: 8.5,
-    totalOrders: 12,
-    lastActive: "2 hours ago",
-    history: [
-      { id: "TRX-1029", product: "Kopi Arabica 1kg", date: "2023-10-12", finalPrice: "Rp 120.000", rounds: 3, status: "completed" },
-      { id: "TRX-1015", product: "Gula Aren 500g", date: "2023-09-28", finalPrice: "Rp 35.000", rounds: 1, status: "completed" },
-    ],
-    recommendations: [
-      { product: "Kopi Robusta 1kg", reason: "Often bought together with Arabica", match: "92%" },
-      { product: "Filter Kopi V60", reason: "Complementary brewing equipment", match: "85%" }
-    ]
-  },
-  {
-    id: "CUST-002",
-    name: "Mustofa",
-    phone: "+62 813-9876-5432",
-    loyaltyScore: 9.2,
-    totalOrders: 24,
-    lastActive: "1 day ago",
-    history: [
-      { id: "TRX-0992", product: "Teh Melati Premium", date: "2023-10-10", finalPrice: "Rp 45.000", rounds: 2, status: "completed" },
-    ],
-    recommendations: [
-      { product: "Madu Hutan 250ml", reason: "High conversion for tea buyers", match: "95%" }
-    ]
-  },
-  {
-    id: "CUST-003",
-    name: "Lugas",
-    phone: "+62 856-1122-3344",
-    loyaltyScore: 4.0,
-    totalOrders: 2,
-    lastActive: "5 mins ago",
-    history: [
-      { id: "TRX-1045", product: "Sirup Frambozen", date: "2023-10-15", finalPrice: "Rp 25.000", rounds: 5, status: "negotiating" },
-    ],
-    recommendations: [
-      { product: "Susu Kental Manis", reason: "Bundle offer to close deal", match: "88%" }
-    ]
-  }
-];
+const rupiah = new Intl.NumberFormat("id-ID", { style: "currency", currency: "IDR", maximumFractionDigits: 0 });
 
 export default function CustomersPage() {
-  const [selectedCustomer, setSelectedCustomer] = useState(mockCustomers[0]);
-  const [searchTerm, setSearchTerm] = useState("");
-
-  const filteredCustomers = mockCustomers.filter(c =>
-    c.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    c.phone.includes(searchTerm)
-  );
-
-  return (
-    <div className="h-full flex flex-col gap-6">
-      <div className="flex justify-between items-center">
-        <div>
-          <h1 className="text-3xl font-semibold text-indigo-950 mb-1">Customers</h1>
-          <p className="text-slate-500 text-xs font-normal">Manage your customer relationships and view AI insights.</p>
-        </div>
-      </div>
-
-      <div className="flex gap-6 h-[calc(100vh-180px)]">
-        {/* Customer List (Left Pane) */}
-        <div className="w-1/3 bg-white/60 backdrop-blur-md border border-white rounded-3xl p-6 shadow-xl flex flex-col">
-          <div className="relative mb-6">
-            <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-            <input 
-              type="text"
-              placeholder="Search customers..."
-              className="w-full pl-10 pr-4 py-2.5 bg-white/50 border border-white/80 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#715bc9]/20 transition-all placeholder:text-slate-400 text-xs font-normal"
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-            />
-          </div>
-
-          <div className="flex-1 overflow-y-auto space-y-3 pr-2 custom-scrollbar">
-            {filteredCustomers.map(customer => (
-              <div
-                key={customer.id}
-                onClick={() => setSelectedCustomer(customer)}
-                className={`p-4 rounded-2xl cursor-pointer transition-all border ${
-                  selectedCustomer.id === customer.id
-                    ? "bg-white border-2 border-[#715bc9] shadow-md shadow-[#715bc9]/15 text-indigo-950"
-                    : "bg-white/50 border-white/80 hover:bg-white hover:shadow-md text-slate-800"
-                }`}
-              >
-                <div className="flex justify-between items-center mb-1">
-                  <h3 className="font-semibold text-sm text-indigo-950">{customer.name}</h3>
-                  <span className="text-xs font-medium px-2.5 py-0.5 rounded-full bg-[#715bc9]/10 text-[#715bc9]">
-                    {customer.loyaltyScore} Score
-                  </span>
-                </div>
-                <div className="flex items-center gap-2 text-xs text-slate-500 font-normal">
-                  <Phone className="w-3.5 h-3.5" />
-                  <span>{customer.phone}</span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Customer Details (Right Pane) */}
-        <div className="w-2/3 bg-white/60 backdrop-blur-md border border-white rounded-3xl p-8 shadow-xl overflow-y-auto custom-scrollbar">
-          {selectedCustomer ? (
-            <div className="space-y-8 relative">
-              {/* Profile Header */}
-              <div className="flex items-start justify-between pb-6 border-b border-slate-100">
-                <div className="flex items-center gap-5">
-                  <div className="w-20 h-20 rounded-2xl bg-[#715bc9] text-white flex items-center justify-center shadow-lg shadow-[#715bc9]/25 font-semibold text-3xl">
-                    {selectedCustomer.name[0]}
-                  </div>
-                  <div>
-                    <h2 className="text-2xl font-semibold text-indigo-950">{selectedCustomer.name}</h2>
-                    <p className="text-slate-500 text-xs font-normal flex items-center gap-2 mt-1">
-                      <Phone className="w-4 h-4 text-[#715bc9]" /> {selectedCustomer.phone}
-                    </p>
-                  </div>
-                </div>
-                <div className="flex gap-4 text-center">
-                  <div className="bg-white/80 backdrop-blur-sm px-4 py-3 rounded-xl border border-slate-200/80 shadow-sm">
-                    <p className="text-slate-500 text-[10px] font-semibold uppercase tracking-wider">Total Orders</p>
-                    <p className="text-xl font-semibold text-indigo-950">{selectedCustomer.totalOrders}</p>
-                  </div>
-                  <div className="bg-white/80 backdrop-blur-sm px-4 py-3 rounded-xl border border-slate-200/80 shadow-sm">
-                    <p className="text-slate-500 text-[10px] font-semibold uppercase tracking-wider">Last Active</p>
-                    <p className="text-xs font-medium text-[#715bc9] mt-1">{selectedCustomer.lastActive}</p>
-                  </div>
-                </div>
-              </div>
-
-              {/* AI Recommendations */}
-              <div>
-                <div className="flex items-center gap-2 mb-4">
-                  <Sparkles className="w-5 h-5 text-[#715bc9]" />
-                  <h3 className="text-xl font-semibold text-indigo-950">AI Recommendations</h3>
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  {selectedCustomer.recommendations.map((rec, idx) => (
-                    <div key={idx} className="bg-white/90 border border-slate-200/80 rounded-2xl p-5 shadow-sm hover:shadow-md transition-shadow relative overflow-hidden group">
-                      <div className="flex justify-between items-start mb-2 relative z-10">
-                        <h4 className="font-semibold text-indigo-950 text-sm">{rec.product}</h4>
-                        <span className="bg-[#715bc9]/10 text-[#715bc9] text-xs px-2.5 py-0.5 rounded-full font-medium">{rec.match} Match</span>
-                      </div>
-                      <p className="text-slate-600 text-xs font-normal relative z-10">{rec.reason}</p>
-                      <button className="mt-4 text-xs font-medium text-[#715bc9] flex items-center gap-1 group-hover:gap-2 transition-all cursor-pointer">
-                        Pitch to Customer <ChevronRight className="w-4 h-4" />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Transaction History / Memory */}
-              <div>
-                <div className="flex items-center gap-2 mb-4">
-                  <Clock className="w-5 h-5 text-[#715bc9]" />
-                  <h3 className="text-xl font-semibold text-indigo-950">Historical Context & Memory</h3>
-                </div>
-                <div className="bg-white/90 border border-slate-200/80 rounded-2xl overflow-hidden shadow-sm">
-                  <table className="w-full text-left border-collapse">
-                    <thead>
-                      <tr className="bg-slate-50 text-indigo-950 border-b border-slate-100 text-xs font-bold uppercase tracking-wider">
-                        <th className="px-6 py-4">Order ID</th>
-                        <th className="px-6 py-4">Product</th>
-                        <th className="px-6 py-4">Final Price</th>
-                        <th className="px-6 py-4 text-center">Nego Rounds</th>
-                        <th className="px-6 py-4">Status</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 text-sm">
-                      {selectedCustomer.history.map((tx) => (
-                        <tr key={tx.id} className="hover:bg-slate-50/80 transition-colors text-slate-700">
-                          <td className="px-6 py-4 font-mono font-bold text-[#715bc9]">{tx.id}</td>
-                          <td className="px-6 py-4 flex items-center gap-2 font-medium">
-                            <PackageOpen className="w-4 h-4 text-slate-400" /> {tx.product}
-                          </td>
-                          <td className="px-6 py-4 font-bold text-slate-900">{tx.finalPrice}</td>
-                          <td className="px-6 py-4 text-center">
-                            <span className="bg-slate-100 text-slate-700 px-2 py-1 rounded-md text-xs font-bold">{tx.rounds}</span>
-                          </td>
-                          <td className="px-6 py-4">
-                            {tx.status === 'completed' ? (
-                              <span className="flex items-center gap-1 text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-full text-xs font-bold w-fit">
-                                <CheckCircle2 className="w-3.5 h-3.5" /> Completed
-                              </span>
-                            ) : (
-                              <span className="flex items-center gap-1 text-amber-700 bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-full text-xs font-bold w-fit">
-                                <Clock className="w-3.5 h-3.5" /> Negotiating
-                              </span>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </div>
-          ) : (
-            <div className="h-full flex flex-col items-center justify-center text-slate-400">
-              <User className="w-16 h-16 mb-4 opacity-20" />
-              <p>Select a customer to view details</p>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
+  const [query, setQuery] = useState(""); const [selectedId, setSelectedId] = useState<string | null>(null);
+  const { customers, isLoading: loadingCustomers, error: customersError, refresh: refreshCustomers } = useCustomers();
+  const { orders, isLoading: loadingOrders } = useOrders(); const { products, isLoading: loadingProducts } = useProducts();
+  const selected = customers.find((item) => item.id === selectedId) || customers[0] || null;
+  const productById = useMemo(() => new Map(products.map((item) => [item.id, item])), [products]);
+  const customerOrders = useMemo(() => selected ? orders.filter((order) => order.customer_id === selected.id) : [], [orders, selected]);
+  const filtered = customers.filter((customer) => `${customer.name || ""} ${customer.whatsapp_number} ${customer.email || ""}`.toLowerCase().includes(query.toLowerCase()));
+  const spent = customerOrders.filter((order) => order.status !== "cancelled").reduce((sum, order) => sum + order.total_amount, 0);
+  const purchasedProductIds = new Set(customerOrders.map((order) => order.product_id));
+  const recommendations = products.filter((product) => product.is_active && product.stock > 0 && !purchasedProductIds.has(product.id)).slice(0, 3);
+  const isLoading = loadingCustomers || loadingOrders || loadingProducts;
+  return <div className="space-y-7 pb-10"><header className="flex flex-wrap items-end justify-between gap-4"><div><p className="mb-2 text-sm font-bold uppercase tracking-[0.18em] text-[#715bc9]">Customer intelligence</p><h1 className="text-4xl font-black tracking-tight text-indigo-950">Pelanggan, konteks, dan peluang</h1><p className="mt-2 text-slate-600">Riwayat order nyata memberi Sales Brain konteks tanpa mengarang profil pelanggan.</p></div><button onClick={() => void refreshCustomers()} className="inline-flex items-center gap-2 rounded-xl bg-white px-4 py-3 text-sm font-bold text-indigo-950 shadow-sm ring-1 ring-slate-200 hover:bg-slate-50"><RefreshCw className={`h-4 w-4 ${isLoading ? "animate-spin" : ""}`} /> Muat ulang</button></header>
+  {customersError && <div className="flex gap-3 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800"><AlertCircle className="h-5 w-5 shrink-0" />{customersError}</div>}
+  <div className="grid gap-6 xl:grid-cols-[0.82fr_1.5fr]"><aside className="rounded-3xl border border-white bg-white/80 p-5 shadow-xl shadow-indigo-100/40 backdrop-blur"><div className="relative"><Search className="absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Cari nama atau WhatsApp" className="w-full rounded-xl border border-slate-200 bg-white py-3 pl-11 pr-4 text-sm outline-none focus:border-[#715bc9] focus:ring-4 focus:ring-indigo-100" /></div><p className="mt-5 text-xs font-bold uppercase tracking-wider text-slate-400">{filtered.length} pelanggan terdaftar</p><div className="mt-3 max-h-[calc(100vh-300px)] space-y-2 overflow-y-auto pr-1">{isLoading ? Array.from({ length: 5 }).map((_, index) => <div key={index} className="h-20 animate-pulse rounded-2xl bg-slate-100" />) : filtered.map((customer) => { const count = orders.filter((order) => order.customer_id === customer.id).length; return <button key={customer.id} onClick={() => setSelectedId(customer.id)} className={`w-full rounded-2xl border p-4 text-left transition ${selected?.id === customer.id ? "border-[#715bc9] bg-indigo-50 shadow-sm" : "border-slate-100 bg-white hover:border-indigo-200"}`}><div className="flex items-center justify-between gap-2"><p className="truncate font-bold text-indigo-950">{customer.name || "Pelanggan WhatsApp"}</p><span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-500">{count} order</span></div><p className="mt-1 flex items-center gap-1 text-xs text-slate-500"><Phone className="h-3 w-3" />{customer.whatsapp_number}</p></button>; })}{!isLoading && filtered.length === 0 && <p className="p-6 text-center text-sm text-slate-500">Tidak ada pelanggan yang cocok.</p>}</div></aside>
+  <section className="min-h-[620px] rounded-3xl border border-white bg-white/85 p-6 shadow-xl shadow-indigo-100/40 backdrop-blur">{selected ? <div className="space-y-7"><div className="flex flex-col justify-between gap-5 border-b border-slate-100 pb-6 sm:flex-row"><div className="flex gap-4"><div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-[#715bc9] text-2xl font-black text-white shadow-lg shadow-indigo-200">{(selected.name || "P").slice(0, 1).toUpperCase()}</div><div><h2 className="text-2xl font-black text-indigo-950">{selected.name || "Pelanggan WhatsApp"}</h2><p className="mt-1 flex items-center gap-2 text-sm text-slate-500"><Phone className="h-4 w-4 text-[#715bc9]" />{selected.whatsapp_number}</p>{selected.email && <p className="mt-1 text-xs text-slate-400">{selected.email}</p>}</div></div><div className="grid grid-cols-2 gap-3"><Mini label="Total order" value={String(customerOrders.length)} /><Mini label="Nilai belanja" value={rupiah.format(spent)} /></div></div>
+  <div className="grid gap-4 md:grid-cols-3"><Info icon={<HeartHandshake />} title="Status relasi" body={customerOrders.length > 2 ? "Pelanggan berulang" : customerOrders.length ? "Pelanggan aktif" : "Pelanggan baru"} /><Info icon={<Clock3 />} title="Terdaftar" body={new Date(selected.created_at).toLocaleDateString("id-ID", { day: "numeric", month: "long", year: "numeric" })} /><Info icon={<ShoppingBag />} title="Order terakhir" body={customerOrders[0] ? new Date(customerOrders[0].created_at).toLocaleDateString("id-ID", { day: "numeric", month: "short" }) : "Belum ada order"} /></div>
+  <div><div className="mb-4 flex items-center gap-2"><Sparkles className="h-5 w-5 text-[#715bc9]" /><h3 className="text-lg font-black text-indigo-950">Peluang rekomendasi katalog</h3></div><p className="-mt-2 mb-4 text-xs text-slate-500">Produk aktif yang belum pernah dibeli pelanggan ini; rekomendasi akhir tetap diputuskan oleh Sales Brain.</p><div className="grid gap-3 sm:grid-cols-3">{recommendations.length ? recommendations.map((product) => <div key={product.id} className="rounded-2xl border border-indigo-100 bg-indigo-50/60 p-4"><p className="truncate font-bold text-indigo-950">{product.name}</p><p className="mt-2 text-sm font-black text-[#715bc9]">{rupiah.format(product.price)}</p><p className="mt-1 text-xs text-slate-500">Stok siap: {product.stock}</p></div>) : <p className="col-span-3 rounded-2xl bg-slate-50 p-5 text-sm text-slate-500">Belum ada rekomendasi yang aman dari stok aktif.</p>}</div></div>
+  <div><div className="mb-4 flex items-center gap-2"><Package className="h-5 w-5 text-[#715bc9]" /><h3 className="text-lg font-black text-indigo-950">Riwayat transaksi</h3></div><div className="overflow-hidden rounded-2xl border border-slate-100"><table className="w-full text-left text-sm"><thead className="bg-slate-50 text-xs uppercase tracking-wider text-slate-400"><tr><th className="p-4">Produk</th><th className="p-4">Total</th><th className="p-4">Status</th><th className="p-4">Tanggal</th></tr></thead><tbody>{customerOrders.length ? customerOrders.map((order) => <tr key={order.id} className="border-t border-slate-100"><td className="p-4 font-bold text-indigo-950">{productById.get(order.product_id)?.name || "Produk arsip"}<span className="ml-2 text-xs font-normal text-slate-400">×{order.quantity}</span></td><td className="p-4 font-semibold text-slate-700">{rupiah.format(order.total_amount)}</td><td className="p-4"><span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold capitalize text-slate-600">{order.status}</span></td><td className="p-4 text-slate-500">{new Date(order.created_at).toLocaleDateString("id-ID", { day: "numeric", month: "short" })}</td></tr>) : <tr><td colSpan={4} className="p-8 text-center text-slate-500">Belum ada riwayat order.</td></tr>}</tbody></table></div></div></div> : <div className="flex h-full min-h-[500px] flex-col items-center justify-center text-center"><UserRound className="h-14 w-14 text-indigo-200" /><h2 className="mt-4 text-xl font-bold text-indigo-950">Pilih pelanggan untuk melihat konteks</h2></div>}</section></div></div>;
 }
+function Mini({ label, value }: { label: string; value: string }) { return <div className="rounded-xl bg-slate-50 px-4 py-3"><p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">{label}</p><p className="mt-1 text-sm font-black text-indigo-950">{value}</p></div>; }
+function Info({ icon, title, body }: { icon: React.ReactNode; title: string; body: string }) { return <div className="rounded-2xl bg-slate-50 p-4"><div className="text-[#715bc9]">{icon}</div><p className="mt-3 text-xs font-bold uppercase tracking-wider text-slate-400">{title}</p><p className="mt-1 text-sm font-bold text-indigo-950">{body}</p></div>; }

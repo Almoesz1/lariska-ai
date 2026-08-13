@@ -68,7 +68,23 @@ def apply_guardrails(
             final_action = "hold_price"
             guard_reason = "Margin too tight for counter offer."
 
-    elif proposed_action in ["hold_price", "bonus"]:
+    elif proposed_action == "hold_price":
+        # Strategi konversi deterministik: HOLD_PRICE dari model bukan berarti
+        # otomatis menolak pelanggan. Bila pelanggan memang menawar dan masih
+        # ada margin aman, ubah menjadi counter-offer yang terkunci oleh code.
+        # Ini menjaga floor price, tetapi memberi Sales Brain ruang merayu dan
+        # mengarahkan percakapan menuju checkout.
+        if requested_discount_pct > 0 and effective_max_discount > 0:
+            final_action = "counter_offer"
+            applied_discount_pct = min(
+                requested_discount_pct / 2.0,
+                effective_max_discount,
+            )
+            guard_reason = "Customer offer received; safe counter-offer calculated by Guardrails."
+        else:
+            guard_reason = "No safe discount room; keep base price."
+
+    elif proposed_action == "bonus":
         applied_discount_pct = 0.0
 
     # Calculated price & BENTENG UTAMA floor price locking

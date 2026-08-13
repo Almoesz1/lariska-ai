@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { 
   Bot, Save, User, Lock, Eye, EyeOff, CheckCircle2, 
   Camera, Trash2
@@ -8,9 +8,9 @@ import {
 
 export default function SettingsPage() {
   // Profile & Avatar States
-  const [userName, setUserName] = useState("Manager kopdes");
-  const [userEmail, setUserEmail] = useState("admin@lariska.ai");
-  const [userAvatar, setUserAvatar] = useState("");
+  const [userName, setUserName] = useState(() => typeof window === "undefined" ? "Manager kopdes" : localStorage.getItem("user_name") || "Manager kopdes");
+  const [userEmail, setUserEmail] = useState(() => typeof window === "undefined" ? "admin@lariska.ai" : localStorage.getItem("user_email") || "admin@lariska.ai");
+  const [userAvatar, setUserAvatar] = useState(() => typeof window === "undefined" ? "" : localStorage.getItem("user_avatar") || "");
 
   // Password States
   const [currentPassword, setCurrentPassword] = useState("password123");
@@ -31,15 +31,6 @@ export default function SettingsPage() {
   const [escalateToHuman, setEscalateToHuman] = useState(true);
 
   const [savedSuccess, setSavedSuccess] = useState(false);
-
-  useEffect(() => {
-    const savedName = localStorage.getItem("user_name");
-    const savedEmail = localStorage.getItem("user_email");
-    const savedAvatar = localStorage.getItem("user_avatar");
-    if (savedName) setUserName(savedName);
-    if (savedEmail) setUserEmail(savedEmail);
-    if (savedAvatar) setUserAvatar(savedAvatar);
-  }, []);
 
   const handleAvatarUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
