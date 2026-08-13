@@ -231,6 +231,35 @@ def find_product_by_name(supabase: Client, product_name: str) -> Optional[dict]:
     return None
 
 
+def get_last_discussed_product_name(supabase: Client, conversation_id: str) -> Optional[str]:
+    """Ambil produk terakhir yang disebut pelanggan dalam percakapan aktif.
+
+    Pelanggan lazim menawar dengan kalimat singkat seperti "boleh 20 ribu?"
+    setelah sebelumnya memilih produk. Karena pesan baru tidak selalu mengulang
+    nama produk, state ini dipulihkan dari entities JSONB pada pesan sebelumnya.
+    """
+    try:
+        res = (
+            supabase.table("messages")
+            .select("entities")
+            .eq("conversation_id", conversation_id)
+            .eq("sender_type", "customer")
+            .order("created_at", desc=True)
+            .limit(10)
+            .execute()
+        )
+    except Exception as exc:
+        logger.warning(f"[StateTracking] Tidak dapat memulihkan produk percakapan: {exc}")
+        return None
+
+    for message in (res.data or []):
+        entities = message.get("entities") or {}
+        product_name = entities.get("product_name")
+        if isinstance(product_name, str) and product_name.strip():
+            return product_name.strip()
+    return None
+
+
 def get_customer_order_count(supabase: Client, customer_id: str) -> int:
     """
     Hitung total order historis pelanggan (untuk skor loyalitas).
@@ -302,9 +331,12 @@ def build_context(
     total_orders = get_customer_order_count(supabase, customer_id)
     customer_loyalty = min(total_orders / 10.0, 1.0)
 
-    # Step 4: Lookup produk jika disebutkan
+    # Step 4: Lookup produk jika disebutkan. Untuk pesan lanjutan yang hanya
+    # memuat nominal tawaran, pulihkan produk terakhir dari memory percakapan.
     product = None
-    product_name_query = intent_result.entities.product_name
+    product_name_query = intent_result.entities.product_name or get_last_discussed_product_name(
+        supabase, conversation_id
+    )
     if product_name_query:
         product = find_product_by_name(supabase, product_name_query)
 

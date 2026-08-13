@@ -4,7 +4,7 @@ import React, { useEffect, useRef } from 'react';
 import { gsap } from 'gsap';
 import { TextPlugin } from 'gsap/TextPlugin';
 import { ScrollTrigger } from 'gsap/ScrollTrigger';
-import { Play, ArrowRight, MessageSquare, Bot, Zap, Brain, Mic, CheckCircle2, ChevronDown } from 'lucide-react';
+import { Play, MessageSquare, Bot, Zap, Brain, Mic, CheckCircle2, ChevronDown } from 'lucide-react';
 import Link from 'next/link';
 
 if (typeof window !== "undefined") {
@@ -42,8 +42,8 @@ export default function LandingPage() {
       });
 
     // 2. Scroll Animations for Captions
-    const captions = gsap.utils.toArray('.animate-caption');
-    captions.forEach((caption: any) => {
+    const captions = gsap.utils.toArray<HTMLElement>('.animate-caption');
+    captions.forEach((caption) => {
       gsap.fromTo(caption, 
         { y: 40, opacity: 0 },
         {
@@ -272,7 +272,7 @@ export default function LandingPage() {
         <div className="animate-caption text-center mb-16">
           <h2 className="text-4xl font-serif text-indigo-950 mb-4">Flexible Pricing for Every Need</h2>
           <p className="text-lg text-slate-600 max-w-2xl mx-auto">
-            Choose a plan that fits your needs. Whether you're a single seller just starting out or a business seeking advanced features.
+            Choose a plan that fits your needs. Whether you&apos;re a single seller just starting out or a business seeking advanced features.
           </p>
         </div>
 

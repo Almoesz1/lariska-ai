@@ -51,6 +51,9 @@ ATURAN KETAT (JANGAN DILANGGAR):
 - Harga yang tercantum di prompt adalah harga FINAL — JANGAN negosiasi angka lain
 - JANGAN menjanjikan diskon lebih dari yang sudah ditetapkan
 - JANGAN memberikan informasi yang tidak ada di konteks
+- Jika keputusan adalah COUNTER_OFFER atau DISCOUNT, fokus membantu pelanggan
+  menyetujui harga tersebut; jangan menulis penolakan harga atau menyebut
+  harga lain di luar angka final.
 
 KEPUTUSAN BISNIS YANG SUDAH DIBUAT (kamu hanya merangkainya dalam bahasa natural):
 {business_decision}
@@ -69,9 +72,11 @@ REKOMENDASI PRODUK LAIN (jika relevan):
 Tulis balasan WhatsApp yang:
 1. Sesuai dengan emosi pelanggan ({emotion})
 2. Mengkomunikasikan keputusan bisnis di atas dengan bahasa natural
-3. Singkat dan to the point (max 4-5 kalimat untuk pesan normal, lebih panjang hanya jika perlu detail produk)
-4. Gunakan emoji secukupnya (1-2 emoji saja, tidak berlebihan)
-5. JANGAN sertakan angka harga LAIN selain yang sudah ditetapkan di business_decision
+3. Untuk negosiasi: awali dengan apresiasi minat pelanggan, sebutkan nilai/manfaat
+   produk secara singkat, lalu tutup dengan CTA checkout yang hangat.
+4. Singkat dan to the point (max 4-5 kalimat untuk pesan normal, lebih panjang hanya jika perlu detail produk)
+5. Gunakan emoji secukupnya (1-2 emoji saja, tidak berlebihan)
+6. JANGAN sertakan angka harga LAIN selain yang sudah ditetapkan di business_decision
 
 Tulis HANYA teks balasannya saja, tidak ada penjelasan tambahan.
 """
@@ -85,7 +90,10 @@ def _format_business_decision(decision: Optional[ScoringDecision], product_name:
     produk = product_name or "produk ini"
 
     if d.decision == ScoringDecisionType.HOLD_PRICE:
-        return f"Harga {produk} sudah final di harga normal. Tidak bisa diturunkan lagi."
+        return (
+            f"Harga {produk} tetap di Rp{d.final_price:,.0f}; tidak ada ruang aman untuk diskon. "
+            "Tetap tanggapi dengan hangat, tonjolkan nilai produk, dan ajak pelanggan checkout."
+        )
 
     if d.decision == ScoringDecisionType.DISCOUNT:
         return (
@@ -97,9 +105,10 @@ def _format_business_decision(decision: Optional[ScoringDecision], product_name:
 
     if d.decision == ScoringDecisionType.COUNTER_OFFER:
         return (
-            f"Tawarkan harga tengah untuk {produk}: Rp{d.final_price:,.0f}. "
-            f"Ini adalah penawaran terbaik yang bisa diberikan. "
-            f"Sampaikan bahwa ini harga special dan berikan sedikit urgensi."
+            f"Berikan counter-offer yang sudah disetujui untuk {produk}: Rp{d.final_price:,.0f}. "
+            "JANGAN menolak atau menyebut harga normal. Apresiasi minat pelanggan, "
+            "sampaikan sebagai harga khusus yang aman untuk toko, beri alasan nilai produk secara singkat, "
+            "dan tutup dengan CTA checkout yang ramah."
         )
 
     if d.decision == ScoringDecisionType.BONUS:
@@ -204,9 +213,17 @@ def _fallback_response(intent: IntentType, decision: Optional[ScoringDecision]) 
         if decision.decision == ScoringDecisionType.DISCOUNT:
             return f"Baik, kami setujui harga Rp{decision.final_price:,.0f} untuk Anda. Mau lanjut order? 😊"
         if decision.decision == ScoringDecisionType.HOLD_PRICE:
-            return "Maaf, harga sudah final dan tidak bisa diturunkan lagi. Apakah ada yang bisa kami bantu?"
+            return (
+                f"Terima kasih sudah minat ya, Kak. Untuk produk ini harga terbaik yang bisa kami jaga "
+                f"ada di Rp{decision.final_price:,.0f} agar kualitasnya tetap terjamin. "
+                "Kalau cocok, saya bantu siapkan pesanannya sekarang ya 😊"
+            )
         if decision.decision == ScoringDecisionType.COUNTER_OFFER:
-            return f"Gimana kalau Rp{decision.final_price:,.0f}? Itu penawaran terbaik dari kami 🙏"
+            return (
+                f"Terima kasih sudah menawar, Kak 😊 Khusus untuk Kakak, kami bisa bantu di "
+                f"Rp{decision.final_price:,.0f}. Ini sudah harga terbaik yang aman sambil tetap menjaga "
+                "kualitas produk—mau saya lanjutkan pesanannya sekarang?"
+            )
     if intent == IntentType.GREETING:
         return "Halo! Selamat datang 😊 Ada yang bisa kami bantu?"
     if intent == IntentType.TANYA_HARGA:

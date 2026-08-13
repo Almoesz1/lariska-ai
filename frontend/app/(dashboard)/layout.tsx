@@ -2,11 +2,11 @@
 
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
-import Image from "next/image";
 import { usePathname, useRouter } from "next/navigation";
-import { Bot, Users, LineChart, ShoppingCart, Package, Settings, LogOut } from "lucide-react";
+import { Bot, Users, LineChart, ShoppingCart, Package, Settings, LogOut, MessageSquare } from "lucide-react";
 
 const navigation = [
+  { name: "Live Demo", href: "/sales-brain", icon: MessageSquare },
   { name: "Products", href: "/products", icon: Package },
   { name: "Customers", href: "/customers", icon: Users },
   { name: "Orders", href: "/orders", icon: ShoppingCart },
@@ -53,11 +53,12 @@ export default function DashboardLayout({
       <div className="fixed bottom-[-10%] right-[-10%] w-[50%] h-[50%] rounded-full bg-indigo-300/20 blur-[120px] pointer-events-none" />
 
       {/* Sidebar */}
-      <aside className="relative z-20 w-64 flex flex-col justify-between h-screen p-6 bg-white/40 backdrop-blur-xl border-r border-white/60">
+      <aside className="relative z-20 hidden w-64 flex-col justify-between border-r border-white/60 bg-white/40 p-6 backdrop-blur-xl md:flex md:h-screen">
         <div>
           {/* Logo */}
-          <div className="flex items-center mb-6 -ml-4 -mt-4 cursor-default">
-            <Image src="/logo.png" alt="Lariska" width={500} height={150} className="w-auto h-[100px]" priority />
+          <div className="flex items-center gap-2 mb-8 mt-1 cursor-default">
+            <Bot className="w-9 h-9 text-[#715bc9]" />
+            <span className="text-2xl font-black tracking-tight text-indigo-950">LARISKA<span className="text-[#715bc9]">.</span></span>
           </div>
 
           {/* Navigation */}
@@ -110,8 +111,14 @@ export default function DashboardLayout({
         </div>
       </aside>
 
+      {/* Mobile navigation: same information architecture, optimized for demo on a phone. */}
+      <div className="fixed inset-x-0 top-0 z-30 border-b border-white/70 bg-white/75 px-4 py-3 backdrop-blur-xl md:hidden">
+        <div className="flex items-center justify-between"><div className="flex items-center gap-2"><Bot className="h-6 w-6 text-[#715bc9]" /><span className="font-black tracking-tight text-indigo-950">LARISKA<span className="text-[#715bc9]">.</span></span></div><Link href="/settings" className="rounded-lg bg-indigo-50 px-2.5 py-1.5 text-xs font-bold text-[#715bc9]">Pengaturan</Link></div>
+        <nav className="mt-3 flex gap-2 overflow-x-auto pb-0.5">{navigation.slice(0, 5).map((item) => { const active = pathname === item.href; return <Link key={item.name} href={item.href} className={`inline-flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-bold ${active ? "bg-[#715bc9] text-white" : "bg-white text-slate-600 ring-1 ring-slate-100"}`}><item.icon className="h-3.5 w-3.5" />{item.name}</Link>; })}</nav>
+      </div>
+
       {/* Main Content */}
-      <main className="flex-1 relative z-10 h-screen overflow-y-auto p-8">
+      <main className="relative z-10 h-screen flex-1 overflow-y-auto p-5 pt-32 md:p-8">
         <div className="max-w-6xl mx-auto">
           {children}
         </div>

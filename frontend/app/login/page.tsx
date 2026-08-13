@@ -2,7 +2,7 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { gsap } from 'gsap';
-import { Bot, ArrowRight, Mail, Lock, Eye, EyeOff } from 'lucide-react';
+import { ArrowRight, Mail, Lock, Eye, EyeOff } from 'lucide-react';
 import Link from 'next/link';
 import Image from 'next/image';
 import { useRouter } from 'next/navigation';
@@ -92,7 +92,7 @@ export default function LoginPage() {
           </form>
 
           <div className="mt-8 text-center text-sm text-slate-600">
-            Don't have an account?{' '}
+            Don&apos;t have an account?{' '}
             <Link href="/signup" className="text-indigo-600 hover:text-indigo-700 font-semibold transition-colors">
               Sign up
             </Link>
