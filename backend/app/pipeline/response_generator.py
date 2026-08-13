@@ -82,30 +82,37 @@ Tulis HANYA teks balasannya saja, tidak ada penjelasan tambahan.
 """
 
 
-def _format_business_decision(decision: Optional[ScoringDecision], product_name: Optional[str]) -> str:
+def _format_business_decision(
+    decision: Optional[ScoringDecision], product_name: Optional[str], quantity: Optional[int] = None
+) -> str:
     if not decision or decision.decision == ScoringDecisionType.NO_NEGO:
         return "Tidak ada negosiasi harga. Jawab pertanyaan pelanggan dengan informatif."
 
     d = decision
     produk = product_name or "produk ini"
+    qty = max(int(quantity or 1), 1)
+    bundle = (
+        f" untuk {qty} unit dengan total Rp{d.final_price * qty:,.0f}"
+        if qty > 1 else f" seharga Rp{d.final_price:,.0f}"
+    )
 
     if d.decision == ScoringDecisionType.HOLD_PRICE:
         return (
-            f"Harga {produk} tetap di Rp{d.final_price:,.0f}; tidak ada ruang aman untuk diskon. "
+            f"Harga {produk} tetap{bundle}; tidak ada ruang aman untuk diskon. "
             "Tetap tanggapi dengan hangat, tonjolkan nilai produk, dan ajak pelanggan checkout."
         )
 
     if d.decision == ScoringDecisionType.DISCOUNT:
         return (
             f"Setujui diskon untuk {produk}. "
-            f"Harga jadi: Rp{d.final_price:,.0f} "
+            f"Harga jadi{bundle} "
             f"(diskon {d.discount_pct:.0%} dari harga normal). "
             f"Sampaikan dengan antusias tapi tetap profesional."
         )
 
     if d.decision == ScoringDecisionType.COUNTER_OFFER:
         return (
-            f"Berikan counter-offer yang sudah disetujui untuk {produk}: Rp{d.final_price:,.0f}. "
+            f"Berikan counter-offer yang sudah disetujui untuk {produk}{bundle}. "
             "JANGAN menolak atau menyebut harga normal. Apresiasi minat pelanggan, "
             "sampaikan sebagai harga khusus yang aman untuk toko, beri alasan nilai produk secara singkat, "
             "dan tutup dengan CTA checkout yang ramah."
@@ -173,7 +180,9 @@ def generate_response(
     """
     prompt = _SYSTEM_TEMPLATE.format(
         shop_name="Toko Kami",  # Bisa dikonfigurasi dari settings nanti
-        business_decision=_format_business_decision(scoring_decision, context.product_name),
+        business_decision=_format_business_decision(
+            scoring_decision, context.product_name, intent_result.entities.quantity
+        ),
         emotion=emotion_result.emotion.value,
         tone_hint=emotion_result.tone_hint,
         context_info=_format_context_info(context, intent_result),
