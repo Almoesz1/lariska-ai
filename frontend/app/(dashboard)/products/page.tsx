@@ -1,49 +1,25 @@
 "use client";
 
-import { AlertCircle, Package, RefreshCw, Tag } from "lucide-react";
+import { useMemo, useState } from "react";
+import { AlertCircle, Boxes, Package, RefreshCw, Search, ShieldCheck, SlidersHorizontal, Tag } from "lucide-react";
 import { useProducts } from "@/hooks/useProducts";
 
 const rupiah = new Intl.NumberFormat("id-ID", { style: "currency", currency: "IDR", maximumFractionDigits: 0 });
+type StockFilter = "all" | "ready" | "low" | "out";
 
 export default function ProductsPage() {
   const { products, isLoading, error, refresh } = useProducts();
-
-  return (
-    <div className="space-y-8 pb-10">
-      <header className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <p className="mb-2 text-sm font-bold uppercase tracking-[0.18em] text-[#715bc9]">Katalog real-time</p>
-          <h1 className="text-4xl font-black tracking-tight text-indigo-950">Produk & Guardrail Harga</h1>
-          <p className="mt-2 text-slate-600">Data dibaca langsung dari katalog Supabase melalui FastAPI.</p>
-        </div>
-        <button onClick={() => void refresh()} className="inline-flex items-center gap-2 rounded-xl bg-white px-4 py-3 text-sm font-bold text-indigo-950 shadow-sm ring-1 ring-slate-200 hover:bg-slate-50">
-          <RefreshCw className={`h-4 w-4 ${isLoading ? "animate-spin" : ""}`} /> Muat ulang
-        </button>
-      </header>
-
-      {error && (
-        <div className="flex items-start gap-3 rounded-2xl border border-rose-200 bg-rose-50 p-5 text-rose-800">
-          <AlertCircle className="mt-0.5 h-5 w-5 shrink-0" />
-          <div><p className="font-bold">Katalog belum dapat dimuat</p><p className="mt-1 text-sm">{error}</p></div>
-        </div>
-      )}
-
-      {isLoading ? (
-        <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">{Array.from({ length: 6 }).map((_, index) => <div key={index} className="h-72 animate-pulse rounded-3xl bg-white/70" />)}</div>
-      ) : !error && products.length === 0 ? (
-        <div className="rounded-3xl border border-dashed border-indigo-200 bg-white/60 py-20 text-center"><Package className="mx-auto h-12 w-12 text-indigo-300" /><h2 className="mt-4 text-xl font-bold text-indigo-950">Belum ada produk aktif</h2><p className="mt-2 text-slate-500">Tambahkan produk melalui dashboard API atau seed Supabase.</p></div>
-      ) : (
-        <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
-          {products.map((product) => {
-            const stockState = product.stock > 5 ? "Stok aman" : product.stock > 0 ? "Stok menipis" : "Stok habis";
-            return <article key={product.id} className="rounded-3xl border border-white bg-white/80 p-6 shadow-lg shadow-indigo-100/50 backdrop-blur transition hover:-translate-y-1 hover:shadow-xl">
-              <div className="flex items-start justify-between gap-3"><div className="rounded-2xl bg-indigo-50 p-3"><Package className="h-6 w-6 text-[#715bc9]" /></div><span className={`rounded-full px-3 py-1 text-xs font-bold ${product.stock > 5 ? "bg-emerald-100 text-emerald-700" : product.stock > 0 ? "bg-amber-100 text-amber-700" : "bg-rose-100 text-rose-700"}`}>{stockState}: {product.stock}</span></div>
-              <p className="mt-6 text-xs font-bold uppercase tracking-wider text-slate-400">{product.category || "Produk"}</p><h2 className="mt-1 text-xl font-black text-indigo-950">{product.name}</h2><p className="mt-2 line-clamp-2 min-h-10 text-sm text-slate-500">{product.description || "Belum ada deskripsi produk."}</p>
-              <div className="mt-6 grid grid-cols-2 gap-3 border-t border-slate-100 pt-5"><div><p className="text-xs font-semibold text-slate-400">Harga jual</p><p className="mt-1 font-black text-indigo-950">{rupiah.format(product.price)}</p></div><div className="rounded-xl bg-amber-50 px-3 py-2"><p className="flex items-center gap-1 text-xs font-bold text-amber-700"><Tag className="h-3 w-3" /> Floor price</p><p className="mt-1 font-black text-amber-900">{rupiah.format(product.floor_price)}</p></div></div>
-            </article>;
-          })}
-        </div>
-      )}
-    </div>
-  );
+  const [query, setQuery] = useState(""); const [stockFilter, setStockFilter] = useState<StockFilter>("all"); const [activeOnly, setActiveOnly] = useState(false);
+  const filtered = useMemo(() => products.filter((product) => {
+    const text = `${product.name} ${product.category || ""} ${product.description || ""}`.toLowerCase();
+    const matchesStock = stockFilter === "all" || (stockFilter === "ready" && product.stock > 5) || (stockFilter === "low" && product.stock > 0 && product.stock <= 5) || (stockFilter === "out" && product.stock === 0);
+    return text.includes(query.toLowerCase()) && matchesStock && (!activeOnly || product.is_active);
+  }), [products, query, stockFilter, activeOnly]);
+  const ready = products.filter((p) => p.stock > 5).length; const low = products.filter((p) => p.stock > 0 && p.stock <= 5).length; const out = products.filter((p) => p.stock === 0).length;
+  return <div className="space-y-7 pb-10"><header className="flex flex-wrap items-end justify-between gap-4"><div><p className="mb-2 text-sm font-bold uppercase tracking-[0.18em] text-[#715bc9]">Katalog real-time</p><h1 className="text-4xl font-black tracking-tight text-indigo-950">Produk & Guardrail Harga</h1><p className="mt-2 text-slate-600">Kelola kesiapan katalog; floor price terlihat sebagai batas aman yang tidak bisa dinegosiasikan dashboard.</p></div><button onClick={() => void refresh()} className="inline-flex items-center gap-2 rounded-xl bg-white px-4 py-3 text-sm font-bold text-indigo-950 shadow-sm ring-1 ring-slate-200 hover:bg-slate-50"><RefreshCw className={`h-4 w-4 ${isLoading ? "animate-spin" : ""}`} /> Muat ulang</button></header>
+  <section className="grid gap-4 sm:grid-cols-3"><Mini label="Stok aman" value={ready} tone="emerald" /><Mini label="Stok menipis" value={low} tone="amber" /><Mini label="Stok habis" value={out} tone="rose" /></section>
+  {error && <div className="flex items-start gap-3 rounded-2xl border border-rose-200 bg-rose-50 p-5 text-rose-800"><AlertCircle className="mt-0.5 h-5 w-5 shrink-0" /><div><p className="font-bold">Katalog belum dapat dimuat</p><p className="mt-1 text-sm">{error}</p></div></div>}
+  <section className="rounded-3xl border border-white bg-white/85 p-5 shadow-xl shadow-indigo-100/40"><div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between"><div className="relative w-full xl:max-w-md"><Search className="absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Cari nama, kategori, atau deskripsi produk" className="w-full rounded-xl border border-slate-200 bg-white py-3 pl-11 pr-4 text-sm outline-none transition focus:border-[#715bc9] focus:ring-4 focus:ring-indigo-100" /></div><div className="flex flex-wrap items-center gap-2"><span className="inline-flex items-center gap-1 text-xs font-bold text-slate-400"><SlidersHorizontal className="h-3.5 w-3.5" /> Filter</span>{(["all", "ready", "low", "out"] as StockFilter[]).map((item) => <button key={item} onClick={() => setStockFilter(item)} className={`rounded-xl px-3 py-2 text-xs font-bold transition ${stockFilter === item ? "bg-[#715bc9] text-white" : "bg-slate-50 text-slate-500 hover:bg-indigo-50"}`}>{item === "all" ? "Semua stok" : item === "ready" ? "Aman" : item === "low" ? "Menipis" : "Habis"}</button>)}<button onClick={() => setActiveOnly((value) => !value)} className={`rounded-xl px-3 py-2 text-xs font-bold transition ${activeOnly ? "bg-indigo-100 text-[#715bc9]" : "bg-slate-50 text-slate-500"}`}>Aktif saja</button></div></div></section>
+  {isLoading ? <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">{Array.from({ length: 6 }).map((_, index) => <div key={index} className="h-80 animate-pulse rounded-3xl bg-white/70" />)}</div> : !error && filtered.length === 0 ? <div className="rounded-3xl border border-dashed border-indigo-200 bg-white/60 py-20 text-center"><Package className="mx-auto h-12 w-12 text-indigo-300" /><h2 className="mt-4 text-xl font-bold text-indigo-950">Tidak ada produk pada filter ini</h2><p className="mt-2 text-slate-500">Ubah pencarian atau filter stok untuk melihat katalog lain.</p></div> : <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">{filtered.map((product) => { const state = product.stock > 5 ? "Stok aman" : product.stock > 0 ? "Stok menipis" : "Stok habis"; const margin = product.price ? Math.max(0, ((product.price - product.floor_price) / product.price) * 100) : 0; return <article key={product.id} className="group rounded-3xl border border-white bg-white/85 p-6 shadow-lg shadow-indigo-100/40 transition hover:-translate-y-1 hover:shadow-xl"><div className="flex items-start justify-between gap-3"><div className="rounded-2xl bg-indigo-50 p-3"><Package className="h-6 w-6 text-[#715bc9]" /></div><div className="flex items-center gap-2"><span className={`rounded-full px-3 py-1 text-xs font-bold ${product.is_active ? "bg-indigo-50 text-[#715bc9]" : "bg-slate-100 text-slate-500"}`}>{product.is_active ? "Aktif" : "Nonaktif"}</span><span className={`rounded-full px-3 py-1 text-xs font-bold ${product.stock > 5 ? "bg-emerald-100 text-emerald-700" : product.stock > 0 ? "bg-amber-100 text-amber-700" : "bg-rose-100 text-rose-700"}`}>{state}</span></div></div><p className="mt-6 text-xs font-bold uppercase tracking-wider text-slate-400">{product.category || "Produk"}</p><h2 className="mt-1 truncate text-xl font-black text-indigo-950">{product.name}</h2><p className="mt-2 line-clamp-2 min-h-10 text-sm text-slate-500">{product.description || "Belum ada deskripsi produk."}</p><div className="mt-6 grid grid-cols-2 gap-3 border-t border-slate-100 pt-5"><div><p className="text-xs font-semibold text-slate-400">Harga jual</p><p className="mt-1 font-black text-indigo-950">{rupiah.format(product.price)}</p></div><div className="rounded-xl bg-amber-50 px-3 py-2"><p className="flex items-center gap-1 text-xs font-bold text-amber-700"><Tag className="h-3 w-3" /> Floor price</p><p className="mt-1 font-black text-amber-900">{rupiah.format(product.floor_price)}</p></div></div><div className="mt-4 flex items-center justify-between rounded-2xl bg-slate-50 px-4 py-3"><span className="flex items-center gap-2 text-xs font-bold text-slate-500"><Boxes className="h-4 w-4 text-[#715bc9]" /> Stok {product.stock} unit</span><span className="flex items-center gap-1 text-xs font-bold text-emerald-700"><ShieldCheck className="h-3.5 w-3.5" /> Ruang aman {margin.toFixed(0)}%</span></div></article>; })}</div>}</div>;
 }
+function Mini({ label, value, tone }: { label: string; value: number; tone: "emerald" | "amber" | "rose" }) { const colors = { emerald: "bg-emerald-50 text-emerald-600", amber: "bg-amber-50 text-amber-600", rose: "bg-rose-50 text-rose-600" }; return <div className="rounded-3xl border border-white bg-white/85 p-5 shadow-lg shadow-indigo-100/30"><div className={`inline-flex rounded-2xl p-3 ${colors[tone]}`}><Boxes className="h-5 w-5" /></div><p className="mt-4 text-xs font-bold uppercase tracking-wider text-slate-400">{label}</p><p className="mt-1 text-2xl font-black text-indigo-950">{value} produk</p></div>; }

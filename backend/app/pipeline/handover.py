@@ -32,7 +32,7 @@ from app.schemas.pipeline import (
 logger = logging.getLogger(__name__)
 
 # Batas maksimum putaran nego sebelum dialihkan ke manusia jika belum closing
-MAX_NEGOTIATION_ROUNDS = 3
+MAX_NEGOTIATION_ROUNDS = 5
 
 # Ambang batas kepercayaan intent model (0.0 - 1.0)
 MIN_CONFIDENCE_THRESHOLD = 0.60
@@ -135,14 +135,10 @@ def evaluate_handover(
         confidence = 0.0
 
     if confidence < MIN_CONFIDENCE_THRESHOLD:
-        logger.info(
-            f"[Handover] Triggered: Low model confidence ({confidence:.2f})."
-        )
-        return HandoverEvaluation(
-            should_handover=True,
-            reason=f"Tingkat pemahaman AI di bawah standar safe threshold ({confidence:.2f}).",
-            urgency_level="low",
-        )
+        # Pesan singkat seperti "jadi ya?" lazim muncul setelah negosiasi.
+        # Ketidakpastian NLU saja bukan alasan memutus konteks dan memaksa
+        # pelanggan menunggu admin; response layer masih bisa mengklarifikasi.
+        logger.info(f"[Handover] Low confidence ({confidence:.2f}); continue with safe clarification.")
 
     return HandoverEvaluation(should_handover=False, reason=None, urgency_level="normal")
 

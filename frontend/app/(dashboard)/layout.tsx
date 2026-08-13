@@ -3,9 +3,10 @@
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Bot, Users, LineChart, ShoppingCart, Package, Settings, LogOut, MessageSquare } from "lucide-react";
+import { Bot, Users, LineChart, ShoppingCart, Package, Settings, LogOut, MessageSquare, LayoutDashboard } from "lucide-react";
 
 const navigation = [
+  { name: "Command Center", href: "/command-center", icon: LayoutDashboard },
   { name: "Live Demo", href: "/sales-brain", icon: MessageSquare },
   { name: "Products", href: "/products", icon: Package },
   { name: "Customers", href: "/customers", icon: Users },

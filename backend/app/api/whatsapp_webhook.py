@@ -21,6 +21,7 @@ from app.pipeline.sales_brain import classify_emotion, run_scoring_engine
 from app.pipeline.state_tracking import (
     build_context,
     close_conversation,
+    get_last_requested_quantity,
     save_message,
     save_negotiation_log,
 )
@@ -78,10 +79,14 @@ def _build_scoring_decision(
             reasoning="Non-negotiation intent atau produk belum teridentifikasi.",
         )
 
+    quantity = max(int(getattr(intent_result.entities, "quantity", None) or 1), 1)
     offered_price = getattr(intent_result.entities, "offered_price", None)
     requested_discount = 0.0
     if offered_price is not None and offered_price > 0:
-        requested_discount = max((product_price - float(offered_price)) / product_price, 0.0)
+        # Harga yang pelanggan sebutkan lazimnya adalah TOTAL bundle
+        # (contoh: "dua pcs 45 ribu"), sedangkan model bekerja per unit.
+        offered_unit_price = float(offered_price) / quantity
+        requested_discount = max((product_price - offered_unit_price) / product_price, 0.0)
 
     # Bobot emosi untuk scoring engine (Frustrasi/Kecewa meningkatkan kepekaan diskon)
     emotion_val = getattr(emotion_result, "emotion", None)
@@ -420,6 +425,16 @@ async def _handle_single_message(message: Dict[str, Any], contact: Dict[str, Any
             sentiment=emotion_result.emotion.value,
         )
 
+        # Pesan lanjutan sering hanya berbunyi "jadi", "kurangin lagi", atau
+        # "checkout". Pertahankan jumlah dari tawaran sebelumnya supaya
+        # perhitungan bundle, balasan, dan invoice tidak kembali ke 1 unit.
+        if not getattr(intent_result.entities, "quantity", None):
+            remembered_quantity = await run_in_threadpool(
+                get_last_requested_quantity, supabase, context.conversation_id
+            )
+            if remembered_quantity:
+                intent_result.entities.quantity = remembered_quantity
+
         # ------------------------------------------------------------
         # TAHAP 4b — Handover / Human Agent Escalation Check
         # ------------------------------------------------------------
@@ -522,7 +537,7 @@ async def _handle_single_message(message: Dict[str, Any], contact: Dict[str, Any
                 product_id=context.product_id,
                 customer_offer_price=offered_p,
                 ai_decision=dec_val,
-                ai_offer_price=final_p,
+                ai_offer_price=(final_p * max(int(getattr(intent_result.entities, "quantity", None) or 1), 1)) if final_p else final_p,
                 floor_price_snapshot=floor_p,
                 model_confidence=conf_score,
                 outcome="pending",
@@ -548,6 +563,7 @@ async def _handle_single_message(message: Dict[str, Any], contact: Dict[str, Any
                 context=context,
                 scoring_decision=scoring_decision,
                 reply_text=reply_text,
+                intent_result=intent_result,
             )
         else:
             await send_text_message(from_number, reply_text)
@@ -577,7 +593,7 @@ async def _handle_single_message(message: Dict[str, Any], contact: Dict[str, Any
 
 
 async def _handle_checkout(
-    supabase: Any, from_number: str, context: Any, scoring_decision: Any, reply_text: str
+    supabase: Any, from_number: str, context: Any, scoring_decision: Any, reply_text: str, intent_result: Any
 ) -> None:
     """
     Menangani Intent Checkout secara lengkap:
@@ -591,9 +607,37 @@ async def _handle_checkout(
         return
 
     try:
-        unit_price = context.product_price
-        discount_amount = getattr(scoring_decision, "discount_amount", 0.0) or 0.0
-        total = max(1.0, unit_price - discount_amount)
+        quantity = max(
+            int(getattr(getattr(intent_result, "entities", None), "quantity", None) or 0)
+            or int(get_last_requested_quantity(supabase, context.conversation_id) or 1),
+            1,
+        )
+        unit_price = float(context.product_price)
+
+        # Checkout dapat terjadi sebagai pesan singkat setelah counter-offer.
+        # Ambil total penawaran AI terakhir agar invoice memegang kesepakatan,
+        # bukan kembali diam-diam ke harga satuan normal.
+        last_nego = (
+            supabase.table("negotiation_logs")
+            .select("ai_offer_price, ai_decision")
+            .eq("conversation_id", context.conversation_id)
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        agreed_total = None
+        if last_nego.data and last_nego.data[0].get("ai_decision") in ("discount", "counter_offer"):
+            candidate = last_nego.data[0].get("ai_offer_price")
+            if candidate is not None:
+                agreed_total = float(candidate)
+
+        total = agreed_total if agreed_total is not None else unit_price * quantity
+        total = max(total, float(context.product_floor_price or 0.0) * quantity)
+        discount_amount = max((unit_price * quantity) - total, 0.0)
+        reply_text = (
+            f"Baik Kak, saya siapkan {quantity} {getattr(context, 'product_name', 'produk')} "
+            f"dengan total *Rp{total:,.0f}*. Silakan lanjutkan pembayarannya ya 😊"
+        )
 
         # 1. Insert Order ke Database
         order_res = await run_in_threadpool(
@@ -603,7 +647,7 @@ async def _handle_checkout(
                     "customer_id": context.customer_id,
                     "conversation_id": context.conversation_id,
                     "product_id": context.product_id,
-                    "quantity": 1,
+                    "quantity": quantity,
                     "unit_price": unit_price,
                     "discount_amount": discount_amount,
                     "total_amount": total,
@@ -628,7 +672,7 @@ async def _handle_checkout(
             customer_name=cust_name,
             customer_phone=from_number,
             product_name=prod_name,
-            quantity=1,
+            quantity=quantity,
         )
 
         # 3. Simpan Record Payment
@@ -655,7 +699,8 @@ async def _handle_checkout(
             f"🧾 *INVOICE PEMBAYARAN #{order_id[:8].upper()}*\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
             f"• *Produk:* {prod_name}\n"
-            f"• *Harga Normal:* Rp{unit_price:,.0f}\n"
+            f"• *Jumlah:* {quantity} unit\n"
+            f"• *Harga Normal:* Rp{unit_price:,.0f}/unit\n"
             f"• *Diskon Khusus:* Rp{discount_amount:,.0f}\n"
             f"• *Total Tagihan:* *Rp{total:,.0f}*\n\n"
             f"Silakan klik tombol di bawah untuk menyelesaikan pembayaran via QRIS / Bank Transfer:"

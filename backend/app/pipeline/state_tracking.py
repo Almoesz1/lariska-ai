@@ -260,6 +260,34 @@ def get_last_discussed_product_name(supabase: Client, conversation_id: str) -> O
     return None
 
 
+def get_last_requested_quantity(supabase: Client, conversation_id: str) -> Optional[int]:
+    """Pulihkan jumlah barang terakhir dari entity percakapan.
+
+    Quantity tidak menjadi kolom baru di schema karena sudah tersimpan sebagai
+    entity JSONB pesan. Ini penting ketika pelanggan berkata "jadi checkout"
+    setelah sebelumnya menyebut "dua pcs".
+    """
+    try:
+        res = (
+            supabase.table("messages")
+            .select("entities")
+            .eq("conversation_id", conversation_id)
+            .eq("sender_type", "customer")
+            .order("created_at", desc=True)
+            .limit(10)
+            .execute()
+        )
+    except Exception as exc:
+        logger.warning(f"[StateTracking] Tidak dapat memulihkan quantity percakapan: {exc}")
+        return None
+
+    for message in (res.data or []):
+        quantity = (message.get("entities") or {}).get("quantity")
+        if isinstance(quantity, int) and quantity > 0:
+            return quantity
+    return None
+
+
 def get_customer_order_count(supabase: Client, customer_id: str) -> int:
     """
     Hitung total order historis pelanggan (untuk skor loyalitas).
