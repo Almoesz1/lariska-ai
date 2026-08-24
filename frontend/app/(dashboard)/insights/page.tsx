@@ -1,140 +1,23 @@
 "use client";
 
-import React, { useState } from "react";
-import { TrendingUp, Clock, Percent, Sparkles, Target, Zap, CheckCircle2 } from "lucide-react";
+import Link from "next/link";
+import { AlertCircle, ArrowRight, BarChart3, Box, CircleDollarSign, PackageX, RefreshCw, ShieldCheck, TrendingUp, UsersRound } from "lucide-react";
+import { useCustomers } from "@/hooks/useCustomers";
+import { useOrders } from "@/hooks/useOrders";
+import { useProducts } from "@/hooks/useProducts";
+
+const rupiah = new Intl.NumberFormat("id-ID", { style: "currency", currency: "IDR", maximumFractionDigits: 0 });
 
 export default function InsightsPage() {
-  const [applied, setApplied] = useState<Record<string, boolean>>({});
-
-  const handleApply = (key: string) => {
-    setApplied(prev => ({ ...prev, [key]: true }));
-    setTimeout(() => {
-      setApplied(prev => ({ ...prev, [key]: false }));
-    }, 3000);
-  };
-
-  return (
-    <div className="h-full flex flex-col gap-8 max-w-6xl">
-      {/* Header */}
-      <div>
-        <h1 className="text-3xl font-semibold text-indigo-950 mb-1">Business Copilot</h1>
-        <p className="text-slate-500 text-xs font-normal">AI-driven operational insights and real-time recommendations.</p>
-      </div>
-
-      {/* Summary Metrics */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <div className="bg-white/90 backdrop-blur-md border border-slate-200/80 rounded-3xl p-7 shadow-lg shadow-indigo-100/30 hover:shadow-xl transition-all relative overflow-hidden">
-          <div className="relative z-10">
-            <div className="w-12 h-12 bg-emerald-50 border border-emerald-100 rounded-2xl flex items-center justify-center mb-4 text-emerald-600 shadow-sm">
-              <TrendingUp className="w-6 h-6" />
-            </div>
-            <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Conversion Rate</p>
-            <h3 className="text-3xl font-semibold text-indigo-950">24.5%</h3>
-            <p className="text-emerald-600 text-xs font-medium mt-2 flex items-center gap-1">
-              <TrendingUp className="w-4 h-4" /> +2.1% from yesterday
-            </p>
-          </div>
-        </div>
-
-        <div className="bg-white/90 backdrop-blur-md border border-slate-200/80 rounded-3xl p-7 shadow-lg shadow-indigo-100/30 hover:shadow-xl transition-all relative overflow-hidden">
-          <div className="relative z-10">
-            <div className="w-12 h-12 bg-amber-50 border border-amber-100 rounded-2xl flex items-center justify-center mb-4 text-amber-600 shadow-sm">
-              <Clock className="w-6 h-6" />
-            </div>
-            <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Peak Negotiation Hours</p>
-            <h3 className="text-3xl font-semibold text-indigo-950">14:00 - 16:00</h3>
-            <p className="text-slate-500 text-xs font-normal mt-2">Highest chat traffic period</p>
-          </div>
-        </div>
-
-        <div className="bg-white/90 backdrop-blur-md border border-slate-200/80 rounded-3xl p-7 shadow-lg shadow-indigo-100/30 hover:shadow-xl transition-all relative overflow-hidden">
-          <div className="relative z-10">
-            <div className="w-12 h-12 bg-[#715bc9]/10 border border-[#715bc9]/20 rounded-2xl flex items-center justify-center mb-4 text-[#715bc9] shadow-sm">
-              <Percent className="w-6 h-6" />
-            </div>
-            <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Average Discount Given</p>
-            <h3 className="text-3xl font-semibold text-[#715bc9]">8.2%</h3>
-            <p className="text-[#715bc9] text-xs font-medium mt-2">Well below 15% floor limit</p>
-          </div>
-        </div>
-      </div>
-
-      {/* AI Recommendations */}
-      <div className="space-y-6 pt-2">
-        <div className="flex items-center gap-3">
-          <div className="p-2.5 bg-[#715bc9]/10 border border-[#715bc9]/20 rounded-2xl">
-            <Sparkles className="w-6 h-6 text-[#715bc9]" />
-          </div>
-          <div>
-            <h2 className="text-2xl font-semibold text-indigo-950">Actionable Insights</h2>
-            <p className="text-xs text-slate-500 font-normal">One-click operational adjustments powered by Sales Brain.</p>
-          </div>
-        </div>
-        
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {/* Insight Card 1 */}
-          <div className="bg-white/90 backdrop-blur-md border border-slate-200/80 rounded-3xl p-8 shadow-lg shadow-indigo-100/30 hover:shadow-xl transition-all flex flex-col justify-between space-y-6">
-            <div>
-              <div className="flex items-center gap-2 mb-4">
-                <span className="bg-[#715bc9]/10 text-[#715bc9] border border-[#715bc9]/20 text-xs px-3 py-1 rounded-lg font-semibold uppercase tracking-wider flex items-center gap-1.5">
-                  <Target className="w-3.5 h-3.5" /> Pricing Strategy
-                </span>
-                <span className="text-slate-400 text-xs font-normal">Just now</span>
-              </div>
-              <p className="text-base text-indigo-950 font-normal leading-relaxed">
-                &ldquo;Kopi Arabica 1kg received 31 negotiation attempts today, with a 12% conversion rate. Lowering floor price by 5% will optimize conversion.&rdquo;
-              </p>
-            </div>
-            <div className="flex gap-3">
-              <button 
-                onClick={() => handleApply("pricing")}
-                className="flex-1 bg-[#715bc9] hover:bg-[#5f49b5] text-white py-3 rounded-xl font-semibold text-xs shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer"
-              >
-                {applied["pricing"] ? (
-                  <> <CheckCircle2 className="w-4 h-4 text-emerald-300" /> Change Applied! </>
-                ) : (
-                  "Apply Change"
-                )}
-              </button>
-              <button className="flex-1 bg-white border border-slate-200 text-slate-700 py-3 rounded-xl font-semibold text-xs hover:bg-slate-50 transition-all cursor-pointer">
-                Dismiss
-              </button>
-            </div>
-          </div>
-
-          {/* Insight Card 2 */}
-          <div className="bg-white/90 backdrop-blur-md border border-slate-200/80 rounded-3xl p-8 shadow-lg shadow-indigo-100/30 hover:shadow-xl transition-all flex flex-col justify-between space-y-6">
-            <div>
-              <div className="flex items-center gap-2 mb-4">
-                <span className="bg-[#715bc9]/10 text-[#715bc9] border border-[#715bc9]/20 text-xs px-3 py-1 rounded-lg font-semibold uppercase tracking-wider flex items-center gap-1.5">
-                  <Zap className="w-3.5 h-3.5 text-[#715bc9]" /> Upsell Opportunity
-                </span>
-                <span className="text-slate-400 text-xs font-normal">2 hours ago</span>
-              </div>
-              <p className="text-base text-indigo-950 font-normal leading-relaxed">
-                &ldquo;Customers buying &lsquo;Kopi Arabica&rsquo; are highly receptive to bundling. Activate a 10% bundle discount with &lsquo;Gula Aren&rsquo; to boost AOV.&rdquo;
-              </p>
-            </div>
-            <div className="flex gap-3">
-              <button 
-                onClick={() => handleApply("bundle")}
-                className="flex-1 bg-[#715bc9] hover:bg-[#5f49b5] text-white py-3 rounded-xl font-semibold text-xs shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer"
-              >
-                {applied["bundle"] ? (
-                  <> <CheckCircle2 className="w-4 h-4 text-emerald-300" /> Bundle Configured! </>
-                ) : (
-                  "Configure Bundle"
-                )}
-              </button>
-              <button className="flex-1 bg-white border border-slate-200 text-slate-700 py-3 rounded-xl font-semibold text-xs hover:bg-slate-50 transition-all cursor-pointer">
-                Dismiss
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
+  const { orders, isLoading: loadingOrders, error: orderError, refresh: refreshOrders } = useOrders(); const { products, isLoading: loadingProducts } = useProducts(); const { customers, isLoading: loadingCustomers } = useCustomers();
+  const completed = orders.filter((order) => ["paid", "shipped", "completed"].includes(order.status)); const revenue = completed.reduce((sum, order) => sum + order.total_amount, 0); const discounts = orders.reduce((sum, order) => sum + order.discount_amount, 0); const averageDiscount = orders.length ? discounts / orders.length : 0; const lowStock = products.filter((product) => product.stock > 0 && product.stock <= product.reorder_point); const outOfStock = products.filter((product) => product.stock === 0); const active = products.filter((product) => product.is_active); const conversion = orders.length ? (completed.length / orders.length) * 100 : 0; const isLoading = loadingOrders || loadingProducts || loadingCustomers;
+  const topProducts = [...products].map((product) => ({ product, volume: orders.filter((order) => order.product_id === product.id && order.status !== "cancelled").reduce((sum, order) => sum + order.quantity, 0), revenue: orders.filter((order) => order.product_id === product.id && order.status !== "cancelled").reduce((sum, order) => sum + order.total_amount, 0) })).filter((item) => item.volume > 0).sort((a, b) => b.revenue - a.revenue).slice(0, 4);
+  return <div className="space-y-7 pb-10"><header className="flex flex-wrap items-end justify-between gap-4"><div><p className="mb-2 text-sm font-bold uppercase tracking-[0.18em] text-[#715bc9]">Business copilot</p><h1 className="text-4xl font-black tracking-tight text-indigo-950">Sinyal bisnis yang bisa ditindaklanjuti</h1><p className="mt-2 text-slate-600">Ringkasan dihitung langsung dari produk, pelanggan, dan order Supabase—bukan angka demonstrasi.</p></div><button onClick={() => void refreshOrders()} className="inline-flex items-center gap-2 rounded-xl bg-white px-4 py-3 text-sm font-bold text-indigo-950 shadow-sm ring-1 ring-slate-200 hover:bg-slate-50"><RefreshCw className={`h-4 w-4 ${isLoading ? "animate-spin" : ""}`} /> Segarkan data</button></header>{orderError && <div className="flex gap-3 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800"><AlertCircle className="h-5 w-5 shrink-0" />{orderError}</div>}
+  <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4"><Kpi icon={<CircleDollarSign />} label="Pendapatan terealisasi" value={rupiah.format(revenue)} note={`${completed.length} order tercatat`} /><Kpi icon={<TrendingUp />} label="Order menuju selesai" value={`${conversion.toFixed(0)}%`} note="Paid, dikirim, atau selesai" tone="emerald" /><Kpi icon={<UsersRound />} label="Pelanggan tersimpan" value={String(customers.length)} note="Identitas WhatsApp unik" tone="violet" /><Kpi icon={<ShieldCheck />} label="Diskon rata-rata" value={rupiah.format(averageDiscount)} note="Nilai diskon per order" tone="amber" /></div>
+  <div className="grid gap-6 xl:grid-cols-[1.45fr_0.85fr]"><section className="rounded-3xl border border-white bg-white/85 p-6 shadow-xl shadow-indigo-100/40"><div className="flex items-center justify-between"><div><h2 className="text-xl font-black text-indigo-950">Produk dengan kontribusi tertinggi</h2><p className="mt-1 text-sm text-slate-500">Berdasarkan nilai order yang tidak dibatalkan.</p></div><BarChart3 className="h-7 w-7 text-[#715bc9]" /></div><div className="mt-7 space-y-4">{isLoading ? Array.from({ length: 4 }).map((_, i) => <div key={i} className="h-16 animate-pulse rounded-2xl bg-slate-100" />) : topProducts.length ? topProducts.map((item, index) => <div key={item.product.id} className="flex items-center gap-4 rounded-2xl bg-slate-50 p-4"><span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-[#715bc9] text-sm font-black text-white">{index + 1}</span><div className="min-w-0 flex-1"><p className="truncate font-bold text-indigo-950">{item.product.name}</p><p className="mt-1 text-xs text-slate-500">{item.volume} unit terjual · stok {item.product.stock}</p></div><p className="text-sm font-black text-indigo-950">{rupiah.format(item.revenue)}</p></div>) : <Empty text="Belum ada order untuk membentuk peringkat produk." />}</div></section>
+  <section className="rounded-3xl border border-white bg-gradient-to-br from-indigo-950 to-[#715bc9] p-6 text-white shadow-xl shadow-indigo-200"><div className="flex items-center gap-3"><div className="rounded-2xl bg-white/15 p-3"><ShieldCheck className="h-6 w-6" /></div><div><p className="text-xs font-bold uppercase tracking-[0.18em] text-indigo-100">Sales Brain safety</p><h2 className="mt-1 text-xl font-black">Margin tetap terlindungi</h2></div></div><p className="mt-6 text-sm leading-relaxed text-indigo-100">Harga penawaran selalu diputuskan pipeline deterministik. Dashboard hanya membaca sinyal transaksi; floor price tidak dapat diubah dari halaman insight.</p><Link href="/sales-brain" className="mt-7 inline-flex items-center gap-2 rounded-xl bg-white px-4 py-3 text-sm font-bold text-indigo-950 transition hover:bg-indigo-50">Coba Live Sales Brain <ArrowRight className="h-4 w-4" /></Link></section></div>
+  <section><div className="mb-4"><h2 className="text-xl font-black text-indigo-950">Prioritas operasional</h2><p className="mt-1 text-sm text-slate-500">Tindakan berbasis stok dan katalog aktif yang tersedia sekarang.</p></div><div className="grid gap-4 md:grid-cols-3"><ActionCard icon={<PackageX />} title="Stok habis" value={String(outOfStock.length)} description={outOfStock.length ? `${outOfStock.slice(0, 2).map((p) => p.name).join(", ")}${outOfStock.length > 2 ? ", dan lainnya" : ""}` : "Tidak ada produk dengan stok nol."} href="/products" tone="rose" /><ActionCard icon={<Box />} title="Stok menipis" value={String(lowStock.length)} description={lowStock.length ? `${lowStock.slice(0, 2).map((p) => p.name).join(", ")}${lowStock.length > 2 ? ", dan lainnya" : ""}` : "Seluruh produk aktif memiliki stok aman."} href="/products" tone="amber" /><ActionCard icon={<ShieldCheck />} title="Katalog aktif" value={`${active.length}/${products.length}`} description="Produk aktif yang dapat direkomendasikan dan dinegosiasikan Sales Brain." href="/products" tone="indigo" /></div></section></div>;
 }
-
-
+function Kpi({ icon, label, value, note, tone = "indigo" }: { icon: React.ReactNode; label: string; value: string; note: string; tone?: "indigo" | "emerald" | "violet" | "amber" }) { const color = { indigo: "bg-indigo-50 text-[#715bc9]", emerald: "bg-emerald-50 text-emerald-600", violet: "bg-violet-50 text-violet-600", amber: "bg-amber-50 text-amber-600" }; return <div className="rounded-3xl border border-white bg-white/85 p-5 shadow-lg shadow-indigo-100/30"><div className={`inline-flex rounded-2xl p-3 ${color[tone]}`}>{icon}</div><p className="mt-4 text-xs font-bold uppercase tracking-wider text-slate-400">{label}</p><p className="mt-1 text-2xl font-black text-indigo-950">{value}</p><p className="mt-2 text-xs text-slate-500">{note}</p></div>; }
+function ActionCard({ icon, title, value, description, href, tone }: { icon: React.ReactNode; title: string; value: string; description: string; href: string; tone: "rose" | "amber" | "indigo" }) { const colors = { rose: "bg-rose-50 text-rose-600", amber: "bg-amber-50 text-amber-600", indigo: "bg-indigo-50 text-[#715bc9]" }; return <Link href={href} className="group rounded-3xl border border-white bg-white/85 p-5 shadow-lg shadow-indigo-100/30 transition hover:-translate-y-0.5 hover:shadow-xl"><div className="flex items-start justify-between"><div className={`rounded-2xl p-3 ${colors[tone]}`}>{icon}</div><span className="text-2xl font-black text-indigo-950">{value}</span></div><h3 className="mt-5 font-black text-indigo-950">{title}</h3><p className="mt-2 min-h-10 text-sm leading-relaxed text-slate-500">{description}</p><p className="mt-4 inline-flex items-center gap-1 text-xs font-bold text-[#715bc9]">Lihat katalog <ArrowRight className="h-3.5 w-3.5 transition group-hover:translate-x-1" /></p></Link>; }
+function Empty({ text }: { text: string }) { return <div className="rounded-2xl border border-dashed border-indigo-100 p-7 text-center text-sm text-slate-500">{text}</div>; }
