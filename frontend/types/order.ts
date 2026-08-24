@@ -1,4 +1,5 @@
 export type OrderStatus = "pending" | "paid" | "shipped" | "completed" | "cancelled";
+export type PaymentStatus = "pending" | "success" | "failed" | "expired";
 
 export type Order = {
   id: string;
@@ -10,6 +11,7 @@ export type Order = {
   discount_amount: number;
   total_amount: number;
   status: OrderStatus;
+  payment_status_snapshot: PaymentStatus;
   created_at: string;
   updated_at: string;
 };

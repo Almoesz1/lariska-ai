@@ -10,6 +10,7 @@ import httpx
 from app.services.whatsapp_client import (
     send_text_message,
     send_interactive_cta,
+    send_interactive_list,
     download_media,
     mark_message_as_read,
 )
@@ -65,6 +66,23 @@ async def test_send_interactive_cta_success(mock_config):
         mock_post.assert_called_once()
         kwargs = mock_post.call_args[1]
         assert kwargs["json"]["interactive"]["action"]["parameters"]["url"] == "https://checkout.midtrans.com/123"
+
+
+@pytest.mark.asyncio
+async def test_send_interactive_list_success(mock_config):
+    mock_response = MagicMock()
+    mock_response.raise_for_status.return_value = None
+    mock_response.json.return_value = {"messages": [{"id": "wamid.LIST123"}]}
+    with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post:
+        mock_post.return_value = mock_response
+        result = await send_interactive_list(
+            to="628123456789",
+            body_text="Pilih kategori produk.",
+            button_label="Lihat kategori",
+            sections=[{"title": "Kategori", "rows": [{"id": "catalog_category:FNB", "title": "Makanan & Minuman"}]}],
+        )
+        assert result["messages"][0]["id"] == "wamid.LIST123"
+        assert mock_post.call_args[1]["json"]["interactive"]["type"] == "list"
 
 
 @pytest.mark.asyncio

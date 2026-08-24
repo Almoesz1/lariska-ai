@@ -35,9 +35,9 @@ router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 # seperti products.embedding (vector 768 dimensi, berat & tidak dipakai
 # dashboard) dan *.deleted_at (detail implementasi soft-delete, bukan
 # sesuatu yang perlu dilihat frontend).
-PRODUCT_COLUMNS = "id, name, description, category, price, floor_price, stock, image_url, is_active, created_at, updated_at"
+PRODUCT_COLUMNS = "id, name, description, category, price, floor_price, stock, sku, unit_label, reorder_point, specifications, search_aliases, image_url, is_active, created_at, updated_at"
 CUSTOMER_COLUMNS = "id, whatsapp_number, name, email, address, created_at, updated_at"
-ORDER_COLUMNS = "id, customer_id, conversation_id, product_id, quantity, unit_price, discount_amount, total_amount, status, created_at, updated_at"
+ORDER_COLUMNS = "id, customer_id, conversation_id, product_id, quantity, unit_price, discount_amount, total_amount, status, payment_status_snapshot, created_at, updated_at"
 
 
 # ============================================================
@@ -248,6 +248,41 @@ def create_order(payload: OrderCreate, supabase: Client = Depends(get_supabase))
 
 @router.put("/orders/{order_id}", response_model=OrderResponse)
 def update_order_status(order_id: UUID, payload: OrderUpdate, supabase: Client = Depends(get_supabase)):
+    """Mencatat langkah pemenuhan order yang sah dari dashboard.
+
+    Pembayaran tidak boleh ditandai operator melalui endpoint ini: status
+    ``paid`` hanya berasal dari webhook payment provider yang tervalidasi.
+    Dengan begitu, dashboard dapat mengelola pengiriman tanpa membuka celah
+    agar order yang belum dibayar ikut diproses atau stok terhitung ulang.
+    """
+    current_res = (
+        supabase.table("orders")
+        .select("id, status")
+        .eq("id", str(order_id))
+        .maybe_single()
+        .execute()
+    )
+    if not current_res.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+
+    current_status = current_res.data["status"]
+    allowed_transitions = {
+        "pending": {"cancelled"},
+        "paid": {"shipped"},
+        "shipped": {"completed"},
+        "completed": set(),
+        "cancelled": set(),
+    }
+    if payload.status not in allowed_transitions[current_status]:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Transisi {current_status} ke {payload.status} tidak diizinkan. "
+                "Order paid berasal dari webhook pembayaran; dashboard hanya "
+                "melanjutkan paid → shipped → completed."
+            ),
+        )
+
     res = (
         supabase.table("orders")
         .update({"status": payload.status})

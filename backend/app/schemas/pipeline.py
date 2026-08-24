@@ -10,7 +10,7 @@ sekaligus jadi dokumentasi hidup arsitektur sistem.
 """
 
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 from pydantic import BaseModel, Field
 
 
@@ -177,6 +177,9 @@ class ConversationContext(BaseModel):
     product_floor_price: Optional[float] = None
     product_stock: Optional[int] = None
     product_category: Optional[str] = None
+    product_description: Optional[str] = None
+    product_unit_label: Optional[str] = None
+    product_specifications: dict[str, Any] = Field(default_factory=dict)
     # Riwayat negosiasi dalam sesi ini
     negotiation_round: int = Field(default=0, description="Putaran nego sesi ini")
     last_ai_decision: Optional[ScoringDecisionType] = None

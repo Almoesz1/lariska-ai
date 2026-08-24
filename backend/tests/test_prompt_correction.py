@@ -1,5 +1,13 @@
-import sys
+"""Diagnostic Gemini live untuk koreksi typo STT.
+
+File ini sengaja bisa dijalankan manual, tetapi tidak boleh melakukan request
+API saat pytest melakukan *collection*. Pengujian unit/offline pipeline tetap
+berada di suite pytest lain; diagnostic ini dipakai hanya ketika operator
+secara sadar meminta verifikasi live dan siap memakai kuota.
+"""
+
 import os
+import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -62,15 +70,20 @@ test_inputs = [
     "Bisa kurang gak kak harganya? Kalau Rp 150.000 boleh?"
 ]
 
-for text in test_inputs:
-    res = generate_content(
-        model="gemini-3.5-flash-lite",
-        contents=f"Pesan pelanggan:\n\"{text}\"",
-        config=types.GenerateContentConfig(
-            system_instruction=prompt,
-            response_mime_type="application/json",
-            response_schema=Schema,
-        ),
-    )
-    print(f"INPUT : {text}")
-    print(f"RESULT: intent={res.parsed.intent} | product={res.parsed.entities.product_name} | conf={res.parsed.confidence}\n")
+def run_live_diagnostic() -> None:
+    for text in test_inputs:
+        res = generate_content(
+            model="gemini-3.5-flash-lite",
+            contents=f"Pesan pelanggan:\n\"{text}\"",
+            config=types.GenerateContentConfig(
+                system_instruction=prompt,
+                response_mime_type="application/json",
+                response_schema=Schema,
+            ),
+        )
+        print(f"INPUT : {text}")
+        print(f"RESULT: intent={res.parsed.intent} | product={res.parsed.entities.product_name} | conf={res.parsed.confidence}\n")
+
+
+if __name__ == "__main__":
+    run_live_diagnostic()

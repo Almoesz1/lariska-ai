@@ -25,6 +25,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 OrderStatus = Literal["pending", "paid", "shipped", "completed", "cancelled"]
+PaymentStatus = Literal["pending", "success", "failed", "expired"]
 
 
 class OrderCreate(BaseModel):
@@ -66,5 +67,8 @@ class OrderResponse(BaseModel):
     discount_amount: float
     total_amount: float
     status: OrderStatus
+    # Snapshot ini diperbarui eksklusif oleh payment webhook. Dashboard hanya
+    # membacanya sebagai bukti sinkronisasi Midtrans, bukan mengubahnya.
+    payment_status_snapshot: PaymentStatus = "pending"
     created_at: datetime
     updated_at: datetime

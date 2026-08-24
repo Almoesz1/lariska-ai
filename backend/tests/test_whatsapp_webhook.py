@@ -8,6 +8,11 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.api.whatsapp_webhook import (
+    _is_catalog_repair_request,
+    _match_free_text_catalog_category,
+    _selected_catalog_category,
+)
 
 
 @pytest.fixture
@@ -194,3 +199,23 @@ def test_post_webhook_malformed_payload(client):
     """Memastikan webhook menangani payload kosong/cacat tanpa unhandled 500 error."""
     response = client.post("/api/whatsapp/webhook", json={})
     assert response.status_code in [200, 400]
+
+
+def test_catalog_category_selection_is_deterministic():
+    assert _selected_catalog_category("Saya ingin melihat kategori FNB") == "FNB"
+    assert _selected_catalog_category("Halo") is None
+
+
+def test_free_text_category_maps_to_exact_catalog_value():
+    categories = ["F&B", "Fashion", "Aksesoris", "Elektronik"]
+
+    assert _match_free_text_catalog_category("kalo aksesoris apa aja", categories) == "Aksesoris"
+    assert _match_free_text_catalog_category("list produk aksesori", categories) == "Aksesoris"
+    assert _match_free_text_catalog_category("mau lihat makanan dan minuman", categories) == "F&B"
+    assert _match_free_text_catalog_category("tas selempang", categories) is None
+
+
+def test_light_catalog_correction_uses_repair_flow_not_handover():
+    assert _is_catalog_repair_request("aksesoris kok malah kopi") is True
+    assert _is_catalog_repair_request("GAJELAS") is True
+    assert _is_catalog_repair_request("saya mau tas selempang") is False

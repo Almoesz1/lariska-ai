@@ -3,7 +3,7 @@
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Bot, Users, LineChart, ShoppingCart, Package, Settings, LogOut, MessageSquare, LayoutDashboard } from "lucide-react";
+import { Bot, Users, LineChart, ShoppingCart, Package, LogOut, MessageSquare, LayoutDashboard } from "lucide-react";
 
 const navigation = [
   { name: "Command Center", href: "/command-center", icon: LayoutDashboard },
@@ -12,7 +12,6 @@ const navigation = [
   { name: "Customers", href: "/customers", icon: Users },
   { name: "Orders", href: "/orders", icon: ShoppingCart },
   { name: "Insights", href: "/insights", icon: LineChart },
-  { name: "Settings", href: "/settings", icon: Settings },
 ];
 
 export default function DashboardLayout({
@@ -114,7 +113,7 @@ export default function DashboardLayout({
 
       {/* Mobile navigation: same information architecture, optimized for demo on a phone. */}
       <div className="fixed inset-x-0 top-0 z-30 border-b border-white/70 bg-white/75 px-4 py-3 backdrop-blur-xl md:hidden">
-        <div className="flex items-center justify-between"><div className="flex items-center gap-2"><Bot className="h-6 w-6 text-[#715bc9]" /><span className="font-black tracking-tight text-indigo-950">LARISKA<span className="text-[#715bc9]">.</span></span></div><Link href="/settings" className="rounded-lg bg-indigo-50 px-2.5 py-1.5 text-xs font-bold text-[#715bc9]">Pengaturan</Link></div>
+        <div className="flex items-center gap-2"><Bot className="h-6 w-6 text-[#715bc9]" /><span className="font-black tracking-tight text-indigo-950">LARISKA<span className="text-[#715bc9]">.</span></span></div>
         <nav className="mt-3 flex gap-2 overflow-x-auto pb-0.5">{navigation.slice(0, 5).map((item) => { const active = pathname === item.href; return <Link key={item.name} href={item.href} className={`inline-flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-bold ${active ? "bg-[#715bc9] text-white" : "bg-white text-slate-600 ring-1 ring-slate-100"}`}><item.icon className="h-3.5 w-3.5" />{item.name}</Link>; })}</nav>
       </div>
 

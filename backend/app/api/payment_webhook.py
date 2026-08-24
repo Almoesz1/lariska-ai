@@ -104,6 +104,22 @@ async def midtrans_webhook(request: Request) -> Dict[str, Any]:
 
     supabase = get_supabase()
 
+    # Ledger permanen: Midtrans dapat mengirim ulang notifikasi yang sama.
+    # Key memasukkan status agar transisi status yang berbeda tetap tercatat.
+    external_event_id = f"{order_id}:{transaction_status}:{status_code}"
+    claimed = supabase.rpc(
+        "claim_webhook_event",
+        {
+            "p_provider": "midtrans",
+            "p_external_event_id": external_event_id,
+            "p_event_type": "payment_notification",
+            "p_payload": data,
+        },
+    ).execute()
+    if not claimed.data:
+        logger.info(f"[PaymentWebhook] Duplicate Midtrans event {external_event_id}; skipped.")
+        return {"status": "ok", "message": "duplicate event skipped"}
+
     # 3. Cari payment record berdasarkan provider_reference (Midtrans Order ID)
     payment_res = (
         supabase.table("payments")
@@ -113,7 +129,11 @@ async def midtrans_webhook(request: Request) -> Dict[str, Any]:
         .execute()
     )
 
-    if not payment_res.data:
+    # Midtrans "Test notification URL" dapat memakai order_id contoh yang
+    # memang belum ada di tabel payments. Respons query dapat berupa None
+    # tergantung versi client Supabase; webhook wajib tetap membalas 200 agar
+    # endpoint tervalidasi, tanpa mengubah transaksi apa pun.
+    if not payment_res or not payment_res.data:
         logger.warning(
             f"[PaymentWebhook] Payment record tidak ditemukan untuk provider_reference={order_id}. "
             "Skipping processing."
@@ -123,6 +143,19 @@ async def midtrans_webhook(request: Request) -> Dict[str, Any]:
     payment = payment_res.data
     payment_id = payment["id"]
     lariska_order_id = payment["order_id"]
+
+    supabase.table("payment_events").upsert(
+        {
+            "payment_id": payment_id,
+            "provider": "midtrans",
+            "external_event_id": external_event_id,
+            "event_type": "payment_notification",
+            "transaction_status": transaction_status,
+            "payload": data,
+            "processed_at": datetime.now(timezone.utc).isoformat(),
+        },
+        on_conflict="provider,external_event_id",
+    ).execute()
 
     # 4. Idempotency Check: Jika status transaksi sudah final, tidak perlu diproses ulang
     if payment["status"] in ("success", "failed", "expired"):
@@ -138,6 +171,7 @@ async def midtrans_webhook(request: Request) -> Dict[str, Any]:
         "status": internal_status,
         "paid_at": now_iso if internal_status == "success" else None,
     }).eq("id", payment_id).execute()
+    supabase.table("orders").update({"payment_status_snapshot": internal_status}).eq("id", lariska_order_id).execute()
 
     logger.info(f"[PaymentWebhook] Status payment {payment_id} berhasil diubah ke '{internal_status}'")
 
@@ -164,36 +198,16 @@ async def midtrans_webhook(request: Request) -> Dict[str, Any]:
             customer_id = order_res.data["customer_id"]
             total_amount = float(order_res.data.get("total_amount", 0))
 
-            # C. Update Stok Produk & Inventory Log
-            prod_res = (
-                supabase.table("products")
-                .select("name, stock")
-                .eq("id", product_id)
-                .maybe_single()
-                .execute()
-            )
-
-            product_name = "Produk LARISKA"
-            if prod_res.data:
-                product_name = prod_res.data.get("name", product_name)
-                stock_before = prod_res.data.get("stock", 0)
-                stock_after = max(stock_before - qty_sold, 0)
-
-                # Update Stok
-                supabase.table("products").update({
-                    "stock": stock_after
-                }).eq("id", product_id).execute()
-
-                # Insert Inventory Log
-                supabase.table("inventory_logs").insert({
-                    "product_id": product_id,
-                    "change_type": "sale",
-                    "quantity_change": -qty_sold,
-                    "stock_before": stock_before,
-                    "stock_after": stock_after,
-                    "reference_order_id": lariska_order_id,
-                }).execute()
-
+            # C. Potong stok + audit dalam satu RPC transaksional.
+            prod_res = supabase.table("products").select("name").eq("id", product_id).maybe_single().execute()
+            product_name = (prod_res.data or {}).get("name", "Produk LARISKA")
+            inventory_res = supabase.rpc(
+                "confirm_inventory_sale",
+                {"p_order_id": lariska_order_id, "p_product_id": product_id, "p_quantity": qty_sold},
+            ).execute()
+            if inventory_res.data and inventory_res.data[0].get("inventory_applied"):
+                stock_before = inventory_res.data[0]["stock_before"]
+                stock_after = inventory_res.data[0]["stock_after"]
                 logger.info(
                     f"[PaymentWebhook] Inventory diperbarui: product={product_id[:8]} "
                     f"| Stok: {stock_before} -> {stock_after}"
@@ -225,6 +239,9 @@ async def midtrans_webhook(request: Request) -> Dict[str, Any]:
                 except Exception as wa_err:
                     logger.error(f"[PaymentWebhook] Gagal mengirim notifikasi WA ke {wa_number}: {str(wa_err)}")
 
+    supabase.table("webhook_events").update(
+        {"processing_status": "processed", "processed_at": datetime.now(timezone.utc).isoformat()}
+    ).eq("provider", "midtrans").eq("external_event_id", external_event_id).execute()
     return {"status": "ok"}
 
 

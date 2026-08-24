@@ -11,6 +11,7 @@ class NegotiateRequest(BaseModel):
     product_name: str = Field(..., json_schema_extra={"example": "Sepatu Sneakers Local"})
     product_price: float = Field(..., json_schema_extra={"example": 100000.0})
     floor_price: float = Field(..., json_schema_extra={"example": 80000.0})
+    stock_qty: int = Field(default=0, ge=0, json_schema_extra={"example": 12})
     max_discount_pct: float = Field(0.25, json_schema_extra={"example": 0.25})
     features: Dict[str, Any] = Field(
         ...,

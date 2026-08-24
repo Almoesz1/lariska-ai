@@ -11,6 +11,7 @@ export function negotiate(product: Product, userMessage: string): Promise<Negoti
       product_name: product.name,
       product_price: product.price,
       floor_price: product.floor_price,
+      stock_qty: product.stock,
       max_discount_pct: Math.max(0, Math.min(0.25, (product.price - product.floor_price) / product.price)),
       features: {
         margin_pct: Math.max(0, (product.price - product.floor_price) / product.price),

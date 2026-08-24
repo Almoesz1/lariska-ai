@@ -199,7 +199,7 @@ export default function LandingPage() {
           <FeatureCard
             icon={<Brain className="w-6 h-6 text-indigo-600" />}
             title="Sales Brain"
-            description="Adaptive negotiation engine. LARISKA decides pricing actions, discount levels, and offers bonuses autonomously."
+            description="Negosiasi adaptif dengan keputusan harga deterministik. Gemini memahami konteks dan menyampaikan respons, sementara guardrail melindungi floor price."
           />
           <FeatureCard
             icon={<MessageSquare className="w-6 h-6 text-indigo-600" />}

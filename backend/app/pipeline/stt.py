@@ -16,9 +16,15 @@ except Exception as e:
     logging.warning(f"[STT] static_ffmpeg init warning: {e}")
 
 from app.core.config import settings
-from app.pipeline.gemini_client import generate_content_with_fallback
-
 logger = logging.getLogger(__name__)
+
+# Kosakata ini memberi konteks pada Whisper tanpa mengubah atau "mengarang"
+# isi suara pelanggan. Ini khusus untuk pola percakapan UMKM yang sering
+# mengandung angka harga, stok, nego, produk, dan nama kanal pembayaran.
+INDONESIAN_SALES_PROMPT = (
+    "Percakapan pelanggan UMKM Indonesia tentang produk, stok, harga, "
+    "negosiasi, checkout, pengiriman, WhatsApp, QRIS, dan pembayaran Midtrans."
+)
 
 
 @lru_cache
@@ -92,14 +98,22 @@ def transcribe_audio_file(
         logger.error(f"[STT] File tidak ditemukan: {file_path}")
         raise FileNotFoundError(f"File audio tidak ditemukan: {file_path}")
 
-    effective_model_size = model_size or getattr(settings, "whisper_model_path", "base")
+    effective_model_size = model_size or getattr(settings, "whisper_model_path", "small")
 
     # 1. Coba OpenAI Whisper (Local)
     try:
         model = _get_whisper_model(effective_model_size)
         logger.info(f"[STT] Transcribing file via Whisper ({effective_model_size}): {file_path}...")
         
-        result = model.transcribe(file_path, language=language, fp16=False)
+        result = model.transcribe(
+            file_path,
+            language=language,
+            task="transcribe",
+            fp16=False,
+            temperature=0,
+            initial_prompt=INDONESIAN_SALES_PROMPT,
+            verbose=False,
+        )
         text = result.get("text", "").strip()
 
         if text:
@@ -107,7 +121,30 @@ def transcribe_audio_file(
             return text
 
     except Exception as exc:
-        logger.warning(f"[STT] Whisper transcription failed ({exc}). Trying Gemini Cloud STT Fallback...")
+        logger.warning(f"[STT] Whisper transcription failed ({exc}).")
+        # Availability fallback: tetap layani pelanggan jika model kualitas
+        # tinggi belum tersedia di mesin. Ini tidak berjalan bila base sendiri
+        # yang gagal, sehingga tidak membuat loop atau duplikasi transkripsi.
+        if effective_model_size != "base":
+            try:
+                logger.info("[STT] Retrying with Whisper base availability fallback.")
+                base_model = _get_whisper_model("base")
+                base_result = base_model.transcribe(
+                    file_path,
+                    language=language,
+                    task="transcribe",
+                    fp16=False,
+                    temperature=0,
+                    initial_prompt=INDONESIAN_SALES_PROMPT,
+                    verbose=False,
+                )
+                base_text = base_result.get("text", "").strip()
+                if base_text:
+                    logger.info("[STT] Whisper base availability fallback succeeded.")
+                    return base_text
+            except Exception as base_exc:
+                logger.warning(f"[STT] Whisper base fallback failed ({base_exc}).")
+        logger.warning("[STT] Trying Gemini Cloud STT Fallback...")
 
     # 2. Fallback ke Gemini Cloud STT jika Whisper lokal gagal
     try:

@@ -3,6 +3,7 @@ LARISKA AI Engine — Main FastAPI Application Entry Point
 File: app/main.py
 """
 
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -21,6 +22,8 @@ from app.api.payment_webhook import router as payment_router
 from app.api.whatsapp_webhook import router as whatsapp_router
 from app.api.sales_brain_api import router as sales_brain_router
 from app.api.bridge_api import router as bridge_router
+from app.pipeline.sales_brain import model_warmup
+from app.pipeline.stt import _get_whisper_model
 
 
 # ============================================================
@@ -70,6 +73,23 @@ async def lifespan(app: FastAPI):
         )
     else:
         logger.info(f"[STARTUP] ✅ Gemini API Key ditemukan, model={settings.gemini_model}")
+
+    # Muat model lokal sebelum webhook pertama datang. Tanpa warmup, voice note
+    # pertama sekaligus memuat Whisper dan LightGBM sehingga respons tampak
+    # macet saat demo/live. Kegagalan warmup tidak mematikan API: jalur
+    # fallback yang sudah ada tetap menangani kondisi tersebut.
+    try:
+        await asyncio.to_thread(model_warmup)
+        logger.info("[STARTUP] ✅ LightGBM Sales Brain telah dipanaskan.")
+    except Exception as exc:
+        logger.warning(f"[STARTUP] ⚠️ Warmup LightGBM dilewati: {exc}")
+
+    try:
+        whisper_model = getattr(settings, "whisper_model_path", "small")
+        await asyncio.to_thread(_get_whisper_model, whisper_model)
+        logger.info(f"[STARTUP] ✅ Whisper '{whisper_model}' telah dipanaskan.")
+    except Exception as exc:
+        logger.warning(f"[STARTUP] ⚠️ Warmup Whisper dilewati: {exc}")
 
     logger.info("[STARTUP] 🚀 LARISKA AI Backend siap.")
     yield
