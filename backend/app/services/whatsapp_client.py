@@ -205,6 +205,41 @@ class WhatsAppClient:
                 logger.error(f"[WhatsAppClient] Unexpected error sending CTA: {exc}")
                 raise
 
+    async def send_interactive_list(
+        self, to: str, body_text: str, button_label: str, sections: list[dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Kirim menu daftar WhatsApp untuk eksplorasi katalog tanpa mengetik."""
+        clean_to = _clean_phone_number(to)
+        url = f"{_WA_API_BASE}/{self.phone_number_id}/messages"
+        safe_sections = []
+        for section in sections[:10]:
+            rows = [
+                {"id": str(row["id"])[:200], "title": str(row["title"])[:24], "description": str(row.get("description", ""))[:72]}
+                for row in section.get("rows", [])[:10]
+                if row.get("id") and row.get("title")
+            ]
+            if rows:
+                safe_sections.append({"title": str(section.get("title", "Pilihan"))[:24], "rows": rows})
+        if not safe_sections:
+            raise ValueError("Interactive list membutuhkan minimal satu pilihan.")
+        payload = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": clean_to,
+            "type": "interactive",
+            "interactive": {
+                "type": "list",
+                "body": {"text": body_text[:1024]},
+                "action": {"button": (button_label or "Lihat katalog")[:20], "sections": safe_sections},
+            },
+        }
+        async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:
+            response = await client.post(url, headers=self.get_headers(), json=payload)
+            response.raise_for_status()
+            result = response.json()
+            logger.info(f"[WhatsAppClient] Interactive catalog list sent to {clean_to}.")
+            return result
+
     async def download_media(self, media_id: str) -> Tuple[bytes, str]:
         """Download file media (Voice Note / Audio) dari WhatsApp menggunakan media_id."""
         headers = self.get_headers()
@@ -267,6 +302,12 @@ async def send_interactive_cta(
     to: str, body_text: str, button_label: str, payment_url: str
 ) -> Dict[str, Any]:
     return await WhatsAppClient().send_interactive_cta(to, body_text, button_label, payment_url)
+
+
+async def send_interactive_list(
+    to: str, body_text: str, button_label: str, sections: list[dict[str, Any]]
+) -> Dict[str, Any]:
+    return await WhatsAppClient().send_interactive_list(to, body_text, button_label, sections)
 
 async def download_media(media_id: str) -> Tuple[bytes, str]:
     return await WhatsAppClient().download_media(media_id)

@@ -13,6 +13,7 @@ Produk yang deleted_at-nya terisi memang sudah difilter di level query
 """
 
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -27,6 +28,11 @@ class ProductBase(BaseModel):
     price: float = Field(ge=0)
     floor_price: float = Field(ge=0)
     stock: int = Field(default=0, ge=0)
+    sku: str | None = Field(default=None, max_length=64)
+    unit_label: str | None = Field(default=None, max_length=80)
+    reorder_point: int = Field(default=5, ge=0)
+    specifications: dict[str, Any] = Field(default_factory=dict)
+    search_aliases: list[str] = Field(default_factory=list)
     image_url: str | None = None
     is_active: bool = True
 
@@ -52,6 +58,11 @@ class ProductUpdate(BaseModel):
     price: float | None = Field(default=None, ge=0)
     floor_price: float | None = Field(default=None, ge=0)
     stock: int | None = Field(default=None, ge=0)
+    sku: str | None = Field(default=None, max_length=64)
+    unit_label: str | None = Field(default=None, max_length=80)
+    reorder_point: int | None = Field(default=None, ge=0)
+    specifications: dict[str, Any] | None = None
+    search_aliases: list[str] | None = None
     image_url: str | None = None
     is_active: bool | None = None
 

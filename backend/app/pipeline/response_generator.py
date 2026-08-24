@@ -132,10 +132,19 @@ def _format_product_info(context: ConversationContext) -> str:
     if not context.product_name:
         return "Belum ada produk spesifik yang dibahas."
     stock_status = "Ready ✅" if (context.product_stock or 0) > 0 else "Stok habis ❌"
+    unit = context.product_unit_label or "unit"
+    specifications = context.product_specifications or {}
+    spec_text = "; ".join(
+        f"{str(key).replace('_', ' ')}: {', '.join(map(str, value)) if isinstance(value, list) else value}"
+        for key, value in specifications.items()
+        if value not in (None, "", [])
+    ) or "Belum ada spesifikasi tambahan."
     return (
         f"Nama: {context.product_name}\n"
         f"Harga Normal: Rp{context.product_price:,.0f}\n"
-        f"Stok: {stock_status} ({context.product_stock or 0} unit)"
+        f"Stok: {stock_status} ({context.product_stock or 0} {unit})\n"
+        f"Deskripsi: {context.product_description or 'Belum ada deskripsi.'}\n"
+        f"Spesifikasi katalog: {spec_text}"
     )
 
 
@@ -158,6 +167,98 @@ def _format_recommendations(products: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _catalog_reply(context: ConversationContext, intent: IntentType) -> Optional[str]:
+    """Jawaban faktual cepat untuk pertanyaan katalog yang umum.
+
+    Menghindari satu panggilan LLM tambahan untuk fakta yang sudah tersedia
+    di Supabase: stok, harga, dan spesifikasi. Ini membuat balasan lebih
+    cepat sekaligus tidak memberi peluang model mengarang detail produk.
+    """
+    if intent == IntentType.GREETING:
+        return "Halo Kak, selamat datang di LARISKA 😊 Saya bisa bantu cari produk, cek detail dan stok, negosiasi harga yang aman, sampai checkout. Pilih kategori di bawah atau tulis produk yang Kakak cari ya."
+    if intent not in (IntentType.TANYA_STOK, IntentType.TANYA_HARGA, IntentType.TANYA_PRODUK):
+        return None
+    if not context.product_name:
+        return "Boleh, Kak. Produk yang dimaksud yang mana ya? Sebutkan nama atau jenis produknya, nanti saya cekkan detail, stok, dan harganya."
+
+    name = context.product_name
+    unit = context.product_unit_label or "unit"
+    stock = int(context.product_stock or 0)
+    if intent == IntentType.TANYA_STOK:
+        if stock > 0:
+            return f"{name} masih ready, Kak—tersedia {stock} {unit}. Kalau cocok, saya juga bisa bantu cek harga atau siapkan pesanannya."
+        return f"Maaf Kak, {name} sedang habis. Saya bisa bantu carikan alternatif yang tersedia ya."
+    if intent == IntentType.TANYA_HARGA:
+        return f"Harga {name} saat ini Rp{float(context.product_price or 0):,.0f} per {unit}. Stok tersedia {stock} {unit}. Kalau ambil lebih dari satu, boleh sampaikan jumlahnya ya, Kak."
+
+    specs = context.product_specifications or {}
+    detail = "; ".join(
+        f"{str(key).replace('_', ' ')} {', '.join(map(str, value)) if isinstance(value, list) else value}"
+        for key, value in specs.items() if value not in (None, "", [])
+    )
+    description = context.product_description or ""
+    body = ". ".join(part.strip(". ") for part in (description, detail) if part)
+    return f"{name}: {body or 'detail katalognya sedang kami lengkapi'}. Stok saat ini {stock} {unit}; harga Rp{float(context.product_price or 0):,.0f}."
+
+
+def _recommendation_reply(products: list[dict]) -> Optional[str]:
+    available = [product for product in products if int(product.get("stock") or 0) > 0][:3]
+    if not available:
+        return None
+    lines = ["Ini pilihan yang tersedia saat ini, Kak:"]
+    for product in available:
+        unit = product.get("unit_label") or "unit"
+        lines.append(f"• {product['name']} — Rp{float(product['price']):,.0f}/{unit} (stok {product.get('stock', 0)})")
+    lines.append("Balas nama produk yang menarik, nanti saya cekkan detail atau bantu negosiasinya ya 😊")
+    return "\n".join(lines)
+
+
+def _negotiation_reply(
+    context: ConversationContext,
+    intent_result: IntentEntityResult,
+    decision: ScoringDecision,
+) -> str:
+    """Balasan negosiasi deterministik; angka tidak pernah dibiarkan diubah LLM."""
+    if not getattr(context, "product_id", None) or not context.product_name or not context.product_price:
+        return (
+            "Boleh banget, Kak 😊 Supaya saya hitung penawaran yang tepat dan aman, "
+            "pilih atau sebutkan dulu nama produknya ya. Setelah itu saya langsung cek harga, stok, dan opsi negonya."
+        )
+
+    quantity = max(int(intent_result.entities.quantity or 1), 1)
+    product_name = context.product_name or "produk ini"
+    normal_price = float(context.product_price or 0)
+    final_price = float(decision.final_price or normal_price)
+    total = final_price * quantity
+
+    if decision.decision in (ScoringDecisionType.DISCOUNT, ScoringDecisionType.COUNTER_OFFER):
+        return (
+            f"Terima kasih sudah menawar, Kak 😊 Untuk *{product_name}*, harga terbaik yang bisa saya amankan "
+            f"adalah *Rp{final_price:,.0f}/unit*—total *Rp{total:,.0f}* untuk {quantity} unit. "
+            "Kalau cocok, balas *checkout* ya; saya siapkan pembayaran QRIS/bank transfer."
+        )
+
+    if decision.decision == ScoringDecisionType.BONUS:
+        return (
+            f"Untuk *{product_name}*, harga tetap *Rp{final_price:,.0f}/unit*, Kak. "
+            "Saya tetap bantu cek bonus atau alternatif yang paling sesuai. Mau lanjut checkout? 😊"
+        )
+
+    return (
+        f"Saya paham Kak ingin harga yang lebih ringan 😊 Untuk *{product_name}*, harga aman yang bisa saya bantu "
+        f"tetap *Rp{final_price:,.0f}/unit* (total *Rp{total:,.0f}* untuk {quantity} unit). "
+        "Angka ini dijaga agar kualitas produk tetap terjamin. Kalau cocok, saya siap proses checkout."
+    )
+
+
+def _contextual_acknowledgement_reply(context: ConversationContext) -> str:
+    return (
+        f"Siap, Kak 😊 Untuk *{context.product_name or 'produk tadi'}* harganya "
+        f"Rp{float(context.product_price or 0):,.0f}/unit. Kalau cocok, balas *checkout* atau tulis jumlahnya; "
+        "kalau masih ingin menawar, sebutkan nominalnya ya."
+    )
+
+
 def generate_response(
     context: ConversationContext,
     intent_result: IntentEntityResult,
@@ -178,8 +279,41 @@ def generate_response(
     Returns:
         Teks balasan yang siap dikirim ke WhatsApp.
     """
+    # Harga, total, dan keputusan negosiasi adalah data bisnis. Respons untuk
+    # jalur ini harus deterministik agar Gemini tidak dapat menyebut angka lain.
+    if intent_result.intent == IntentType.NEGO and scoring_decision:
+        logger.info("[ResponseGenerator] Mengirim jawaban negosiasi deterministik.")
+        return _negotiation_reply(context, intent_result, scoring_decision)
+
+    if intent_result.intent == IntentType.REKOMENDASI:
+        recommendation_reply = _recommendation_reply(recommended_products or [])
+        if recommendation_reply:
+            logger.info("[ResponseGenerator] Mengirim rekomendasi katalog deterministik.")
+            return recommendation_reply
+        # Kategori/rekomendasi tidak boleh diteruskan ke LLM karena dapat
+        # mengarang tautan katalog atau produk yang tidak tersedia.
+        return "Maaf Kak, belum ada produk aktif yang cocok di pilihan itu. Boleh pilih kategori lain atau tulis nama produknya ya."
+
+    if intent_result.intent == IntentType.TANYA_HARGA and recommended_products and not context.product_name:
+        recommendation_reply = _recommendation_reply(recommended_products)
+        if recommendation_reply:
+            logger.info("[ResponseGenerator] Mengirim pilihan katalog untuk pertanyaan harga umum.")
+            return recommendation_reply
+
+    normalised_message = " ".join((intent_result.raw_text or "").lower().split())
+    if (
+        normalised_message in {"oke", "ok", "ya", "yaudah", "yaudah deh", "baik", "sip", "setuju"}
+        and context.product_name
+    ):
+        return _contextual_acknowledgement_reply(context)
+
+    factual_reply = _catalog_reply(context, intent_result.intent)
+    if factual_reply:
+        logger.info("[ResponseGenerator] Mengirim jawaban katalog deterministik.")
+        return factual_reply
+
     prompt = _SYSTEM_TEMPLATE.format(
-        shop_name="Toko Kami",  # Bisa dikonfigurasi dari settings nanti
+        shop_name="LARISKA",
         business_decision=_format_business_decision(
             scoring_decision, context.product_name, intent_result.entities.quantity
         ),
@@ -203,8 +337,8 @@ def generate_response(
             model=model_name,
             contents=prompt,
             config=types.GenerateContentConfig(
-                temperature=0.7,
-                max_output_tokens=500,
+                temperature=0.35,
+                max_output_tokens=280,
             ),
         )
         reply = response.text.strip()

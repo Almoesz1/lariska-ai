@@ -92,7 +92,6 @@ def create_qris_payment(
     # Midtrans mengharuskan amount berupa integer Rupiah utuh
     amount_int = int(round(amount))
     quantity_safe = max(1, quantity)
-    unit_price = amount_int // quantity_safe
 
     # Format ID transaksi khusus Midtrans
     midtrans_order_id = f"LARISKA-{order_id[:8].upper()}"
@@ -105,16 +104,24 @@ def create_qris_payment(
         "item_details": [
             {
                 "id": order_id[:8],
-                "price": unit_price,
-                "quantity": quantity_safe,
-                "name": product_name[:50],  # Maksimal 50 karakter untuk Midtrans
+                # Midtrans mewajibkan gross_amount PERSIS sama dengan jumlah
+                # item_details. Harga hasil nego bisa tidak habis dibagi jumlah
+                # unit (contoh Rp70.000 / 3), jadi kirim satu baris bundle
+                # dengan nilai total persis daripada pembulatan yang menyisakan
+                # Rp1 dan ditolak API.
+                "price": amount_int,
+                "quantity": 1,
+                "name": f"{product_name} ({quantity_safe} unit)"[:50],
             }
         ],
         "customer_details": {
             "first_name": customer_name or "Pelanggan",
             "phone": customer_phone,
         },
-        "enabled_payments": ["qris"],  # Khusus transaksi QRIS
+        # Jangan mengunci QRIS di request. Ketersediaan QRIS Sandbox berbeda
+        # antarakun; mengunci kanal ini membuat Snap kosong walau VA/e-wallet
+        # sudah diaktifkan pada Snap Preferences. Dengan field dihilangkan,
+        # Midtrans menampilkan kanal Sandbox yang memang aktif untuk merchant.
         "expiry": {
             "unit": "hour",
             "duration": 24,  # QRIS aktif selama 24 jam

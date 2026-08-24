@@ -15,6 +15,8 @@ Referensi proposal Bab 4, Tahap 3: Conversation State Tracking
 """
 
 import logging
+import re
+from difflib import SequenceMatcher
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -30,6 +32,15 @@ logger = logging.getLogger(__name__)
 
 # Nilai ai_decision yang diizinkan CHECK constraint negotiation_logs di schema.sql
 _VALID_DB_NEGOTIATION_DECISIONS = {"hold_price", "discount", "bonus", "counter_offer"}
+
+
+def _normalise_product_query(value: str) -> str:
+    """Normalisasi variasi bahasa chat Indonesia untuk lookup katalog."""
+    normalized = re.sub(r"[^a-z0-9]+", " ", (value or "").lower()).strip()
+    # Contoh WA/STT lazim: "arabikanya" atau "arabika".
+    normalized = re.sub(r"\barabika(?:nya)?\b", "arabica", normalized)
+    normalized = re.sub(r"\b(\w{4,})nya\b", r"\1", normalized)
+    return normalized
 
 
 # ============================================================
@@ -136,6 +147,8 @@ def save_message(
     intent: Optional[str] = None,
     entities: Optional[dict] = None,
     sentiment: Optional[str] = None,
+    external_message_id: Optional[str] = None,
+    provider_metadata: Optional[dict] = None,
 ) -> dict:
     """
     Simpan satu pesan ke tabel `messages`.
@@ -149,6 +162,8 @@ def save_message(
         "intent": intent,
         "entities": entities or {},
         "sentiment": sentiment,
+        "external_message_id": external_message_id,
+        "provider_metadata": provider_metadata or {},
     }
     res = supabase.table("messages").insert(data).execute()
     logger.info(
@@ -215,17 +230,68 @@ def find_product_by_name(supabase: Client, product_name: str) -> Optional[dict]:
 
     res = (
         supabase.table("products")
-        .select("id, name, description, category, price, floor_price, stock, is_active")
+        .select("id, name, description, category, price, floor_price, stock, unit_label, specifications, search_aliases, is_active")
         .ilike("name", f"%{product_name}%")
         .is_("deleted_at", "null")
         .eq("is_active", True)
-        .limit(1)
+        .limit(2)
         .execute()
     )
 
     if res and res.data:
-        logger.info(f"[StateTracking] Product found: '{res.data[0]['name']}' for query '{product_name}'")
-        return res.data[0]
+        # "kopi" dapat cocok ke Arabica dan Robusta. Jangan memilih satu
+        # secara acak karena harga/negosiasi lalu tampak berubah. Produk baru
+        # dipilih setelah pelanggan menyebut nama yang cukup spesifik.
+        query = " ".join(product_name.lower().split())
+        exact_matches = [
+            item for item in res.data
+            if " ".join(str(item.get("name", "")).lower().split()) == query
+        ]
+        if len(res.data) > 1 and not exact_matches:
+            logger.info(f"[StateTracking] Ambiguous product query '{product_name}', ask/show choices.")
+            return None
+        product = exact_matches[0] if exact_matches else res.data[0]
+        logger.info(f"[StateTracking] Product found: '{product['name']}' for query '{product_name}'")
+        return product
+
+    # Fallback terkontrol untuk variasi percakapan seperti "kopi arabikanya".
+    # Ambil katalog aktif lalu beri skor berdasarkan kata yang cocok; hanya
+    # hasil unik dengan kecocokan kuat yang dipilih agar tidak salah produk.
+    try:
+        catalog = (
+            supabase.table("products")
+            .select("id, name, description, category, price, floor_price, stock, unit_label, specifications, search_aliases, is_active")
+            .eq("is_active", True)
+            .is_("deleted_at", "null")
+            .limit(100)
+            .execute()
+        )
+        query_terms = set(_normalise_product_query(product_name).split())
+        candidates = []
+        for item in catalog.data or []:
+            name_terms = set(_normalise_product_query(str(item.get("name", ""))).split())
+            exact_score = len(query_terms & name_terms)
+            # Whisper kadang menghasilkan "harapika" untuk "arabica". Nilai
+            # fuzzy hanya membantu memilih nama katalog yang paling dekat;
+            # pemilihan tetap ditolak bila skor teratas tidak unik.
+            fuzzy_score = sum(
+                max(
+                    (SequenceMatcher(None, query_term, name_term).ratio() for name_term in name_terms),
+                    default=0.0,
+                )
+                for query_term in query_terms
+                if len(query_term) >= 5 and query_term not in name_terms
+            )
+            score = exact_score + fuzzy_score
+            if score:
+                candidates.append((score, item))
+        candidates.sort(key=lambda pair: (-pair[0], str(pair[1].get("name", "")).lower()))
+        if candidates and (len(candidates) == 1 or candidates[0][0] > candidates[1][0] + 0.05):
+            product = candidates[0][1]
+            logger.info(f"[StateTracking] Normalized product found: '{product['name']}' for query '{product_name}'")
+            return product
+    except Exception as exc:
+        logger.warning(f"[StateTracking] Normalized product lookup failed: {exc}")
 
     logger.warning(f"[StateTracking] Product not found for: '{product_name}'")
     return None
@@ -255,9 +321,62 @@ def get_last_discussed_product_name(supabase: Client, conversation_id: str) -> O
     for message in (res.data or []):
         entities = message.get("entities") or {}
         product_name = entities.get("product_name")
+        # Pemilihan kategori yang lebih baru berarti pelanggan sedang melihat
+        # katalog baru. Jangan diam-diam memakai produk dari percakapan lama
+        # (mis. jaket) untuk sebuah tawaran yang belum menyebut produk.
+        # Namun beberapa hasil NLU menyertakan kategori *dan* nama produk pada
+        # pesan nego yang sama; nama produk eksplisit tetap harus menang agar
+        # checkout bisa meneruskan produk yang baru saja dinegosiasikan.
+        if entities.get("target_product_category") and not product_name:
+            return None
         if isinstance(product_name, str) and product_name.strip():
             return product_name.strip()
     return None
+
+
+def get_last_selected_catalog_category(supabase: Client, conversation_id: str) -> Optional[str]:
+    """Ambil kategori pilihan terakhir selama belum ditimpa pilihan produk."""
+    try:
+        res = (
+            supabase.table("messages")
+            .select("entities")
+            .eq("conversation_id", conversation_id)
+            .eq("sender_type", "customer")
+            .order("created_at", desc=True)
+            .limit(10)
+            .execute()
+        )
+    except Exception as exc:
+        logger.warning(f"[StateTracking] Tidak dapat memulihkan kategori percakapan: {exc}")
+        return None
+
+    for message in (res.data or []):
+        entities = message.get("entities") or {}
+        if entities.get("product_name"):
+            return None
+        category = entities.get("target_product_category")
+        if isinstance(category, str) and category.strip():
+            return category.strip()
+    return None
+
+
+def get_single_active_product_in_category(supabase: Client, category: str) -> Optional[dict]:
+    """Kembalikan produk hanya ketika kategori mempunyai tepat satu pilihan."""
+    try:
+        res = (
+            supabase.table("products")
+            .select("id, name, description, category, price, floor_price, stock, unit_label, specifications, search_aliases, is_active")
+            .eq("category", category)
+            .eq("is_active", True)
+            .is_("deleted_at", "null")
+            .limit(2)
+            .execute()
+        )
+        products = res.data or []
+        return products[0] if len(products) == 1 else None
+    except Exception as exc:
+        logger.warning(f"[StateTracking] Tidak dapat memeriksa produk tunggal kategori: {exc}")
+        return None
 
 
 def get_last_requested_quantity(supabase: Client, conversation_id: str) -> Optional[int]:
@@ -292,13 +411,17 @@ def get_customer_order_count(supabase: Client, customer_id: str) -> int:
     """
     Hitung total order historis pelanggan (untuk skor loyalitas).
     """
-    res = (
-        supabase.table("orders")
-        .select("id", count="exact")
-        .eq("customer_id", customer_id)
-        .in_("status", ["paid", "shipped", "completed"])
-        .execute()
-    )
+    try:
+        res = (
+            supabase.table("orders")
+            .select("id", count="exact")
+            .eq("customer_id", customer_id)
+            .in_("status", ["paid", "shipped", "completed"])
+            .execute()
+        )
+    except Exception as exc:
+        logger.warning(f"[StateTracking] Order history unavailable, using loyalty=0: {exc}")
+        return 0
     count = res.count or 0
     logger.debug(f"[StateTracking] Customer {customer_id} has {count} completed orders.")
     return count
@@ -308,12 +431,16 @@ def get_negotiation_round(supabase: Client, conversation_id: str) -> int:
     """
     Hitung berapa kali nego sudah terjadi dalam sesi ini.
     """
-    res = (
-        supabase.table("negotiation_logs")
-        .select("id", count="exact")
-        .eq("conversation_id", conversation_id)
-        .execute()
-    )
+    try:
+        res = (
+            supabase.table("negotiation_logs")
+            .select("id", count="exact")
+            .eq("conversation_id", conversation_id)
+            .execute()
+        )
+    except Exception as exc:
+        logger.warning(f"[StateTracking] Negotiation count unavailable, using 0: {exc}")
+        return 0
     return res.count or 0
 
 
@@ -321,14 +448,20 @@ def get_last_ai_decision(supabase: Client, conversation_id: str) -> Optional[str
     """
     Ambil keputusan AI terakhir dalam sesi ini untuk context Sales Brain.
     """
-    res = (
-        supabase.table("negotiation_logs")
-        .select("ai_decision")
-        .eq("conversation_id", conversation_id)
-        .order("created_at", desc=True)
-        .limit(1)
-        .execute()
-    )
+    try:
+        res = (
+            supabase.table("negotiation_logs")
+            .select("ai_decision")
+            .eq("conversation_id", conversation_id)
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+    except Exception as exc:
+        # Nilai ini hanya enrichment konteks. Jangan gagalkan layanan chat
+        # ketika koneksi HTTP/2 Supabase sedang reset sesaat di Windows.
+        logger.warning(f"[StateTracking] Last negotiation decision unavailable: {exc}")
+        return None
     if res and res.data:
         return res.data[0]["ai_decision"]
     return None
@@ -367,6 +500,13 @@ def build_context(
     )
     if product_name_query:
         product = find_product_by_name(supabase, product_name_query)
+    elif not intent_result.entities.target_product_category:
+        # Setelah pelanggan membuka kategori yang hanya berisi satu produk,
+        # penawaran singkat "ambil dua 45" boleh mengarah ke produk itu. Untuk
+        # kategori dengan banyak produk, tetap minta nama produk agar aman.
+        last_category = get_last_selected_catalog_category(supabase, conversation_id)
+        if last_category:
+            product = get_single_active_product_in_category(supabase, last_category)
 
     # Step 5: Riwayat nego
     negotiation_round = get_negotiation_round(supabase, conversation_id)
@@ -391,6 +531,9 @@ def build_context(
         product_floor_price=float(product["floor_price"]) if product and product.get("floor_price") is not None else None,
         product_stock=product.get("stock") if product else None,
         product_category=product.get("category") if product else None,
+        product_description=product.get("description") if product else None,
+        product_unit_label=product.get("unit_label") if product else None,
+        product_specifications=product.get("specifications") or {} if product else {},
         negotiation_round=negotiation_round,
         last_ai_decision=last_decision,
     )

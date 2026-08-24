@@ -61,7 +61,10 @@ class Settings(BaseSettings):
 
     # RAG Vector & Audio Configuration
     embedding_model_path: str = Field(default="text-embedding-004", validation_alias="EMBEDDING_MODEL_PATH")
-    whisper_model_path: str = Field(default="base", validation_alias="WHISPER_MODEL_PATH")
+    # small memberi akurasi Bahasa Indonesia yang jauh lebih baik untuk voice
+    # note dibanding base, tetapi tetap dapat dioverride di .env bila mesin
+    # deployment sangat terbatas.
+    whisper_model_path: str = Field(default="small", validation_alias="WHISPER_MODEL_PATH")
 
     # =====================================================
     # Sales Brain / Dynamic Negotiation & Scoring Engine

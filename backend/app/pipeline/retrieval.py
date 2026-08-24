@@ -13,7 +13,9 @@ Priority Order:
 Referensi proposal Bab 4, Tahap 5: Retrieval (pgvector)
 """
 
+import asyncio
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 from app.pipeline.gemini_client import embed_content
@@ -24,17 +26,87 @@ logger = logging.getLogger(__name__)
 # Konstanta Model Embedding Google GenAI
 EMBEDDING_MODEL = "text-embedding-004"
 
+# Kata percakapan umum tidak boleh menjadi dasar pencarian katalog. Dengan
+# demikian pesan seperti "saya ingin beli kopi" dicocokkan ke "kopi", bukan
+# jatuh ke fallback acak hanya karena model embedding sedang tidak tersedia.
+_SEARCH_STOPWORDS = {
+    "aku", "anda", "apa", "atau", "beli", "bisa", "cari", "dengan", "dong",
+    "ingin", "ini", "itu", "kak", "kalau", "lihat", "mau", "pak", "produk",
+    "saja", "saya", "tolong", "untuk", "ya", "yang", "nih", "deh",
+}
+
+
+def _normalise_search_text(value: Any) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
+    # Normalisasi kecil untuk gaya chat/STT yang lazim tanpa membiarkan model
+    # bahasa menebak nama produk.
+    normalized = re.sub(r"\barabika(?:nya)?\b", "arabica", normalized)
+    normalized = re.sub(r"\b(\w{4,})nya\b", r"\1", normalized)
+    return normalized
+
+
+def _catalog_text(product: Dict[str, Any]) -> str:
+    """Susun teks katalog yang aman untuk pencarian deterministik lokal."""
+    aliases = product.get("search_aliases") or []
+    if not isinstance(aliases, list):
+        aliases = [aliases]
+    return " ".join(
+        _normalise_search_text(part)
+        for part in (
+            product.get("name"), product.get("category"), product.get("description"),
+            product.get("sku"), " ".join(map(str, aliases)),
+        )
+    )
+
+
+def _lexical_catalog_matches(
+    products: List[Dict[str, Any]], query_text: str, limit: int
+) -> List[Dict[str, Any]]:
+    """Cari produk berdasarkan kata katalog sebelum memakai embedding.
+
+    Ini menjaga respons katalog tetap relevan dan hemat kuota saat pelanggan
+    menyebut produk langsung, misalnya "kopi", "tumbler", atau "charger".
+    """
+    normalized_query = _normalise_search_text(query_text)
+    tokens = [
+        token for token in normalized_query.split()
+        if len(token) >= 3 and token not in _SEARCH_STOPWORDS
+    ]
+    if not tokens:
+        return []
+
+    scored: List[tuple[int, Dict[str, Any]]] = []
+    for product in products:
+        haystack = _catalog_text(product)
+        name = _normalise_search_text(product.get("name"))
+        matched = [token for token in tokens if token in haystack]
+        if not matched:
+            continue
+        score = len(matched) * 10
+        if normalized_query in name or any(name.startswith(token) for token in matched):
+            score += 5
+        if product.get("stock", 0) > 0:
+            score += 1
+        scored.append((score, product))
+
+    scored.sort(key=lambda item: (-item[0], str(item[1].get("name", "")).lower()))
+    return [product for _, product in scored[:limit]]
+
 def generate_text_embedding(text: str) -> Optional[List[float]]:
     """
     Menghasilkan vector embedding dari teks menggunakan SDK google-genai terbaru.
     """
     try:
-        response = embed_content(
+        # get_recommended_products dipanggil melalui worker thread, sehingga
+        # coroutine embedding harus dieksekusi sampai selesai di thread ini.
+        # Sebelumnya coroutine diperlakukan seperti respons SDK dan memunculkan
+        # error "coroutine has no attribute embedding".
+        values = asyncio.run(embed_content(
             model=EMBEDDING_MODEL,
             contents=text,
-        )
-        if response.embedding and response.embedding.values:
-            return response.embedding.values
+        ))
+        if values:
+            return list(values)
         return None
     except Exception as exc:
         logger.error(f"[Retrieval] Error saat membuat text embedding: {exc}")
@@ -62,7 +134,40 @@ def get_recommended_products(
         List dictionary berisi data produk.
     """
     supabase = get_supabase()
-    PRODUCT_COLS = "id, name, description, category, price, floor_price, stock, image_url"
+    PRODUCT_COLS = (
+        "id, name, description, category, price, floor_price, stock, image_url, "
+        "sku, unit_label, specifications, search_aliases"
+    )
+
+    # === Mode 0: Exact/lexical catalog grounding ===
+    # Pencarian ini sengaja dilakukan sebelum vector similarity supaya daftar
+    # untuk kata produk eksplisit tidak berubah menjadi produk lintas kategori
+    # ketika embedding/RPC tidak aktif atau mengembalikan hasil lemah.
+    if query_text:
+        try:
+            catalog_response = (
+                supabase.table("products")
+                .select(PRODUCT_COLS)
+                .eq("is_active", True)
+                .is_("deleted_at", "null")
+                .execute()
+            )
+            lexical_results = _lexical_catalog_matches(
+                catalog_response.data or [], query_text, limit + 1
+            )
+            if current_product_id:
+                lexical_results = [
+                    product for product in lexical_results
+                    if product.get("id") != current_product_id
+                ]
+            if lexical_results:
+                logger.info(
+                    "[Retrieval] Lexical catalog match: %s products for %r",
+                    len(lexical_results), query_text[:60],
+                )
+                return lexical_results[:limit]
+        except Exception as exc:
+            logger.warning("[Retrieval] Lexical catalog query failed: %s", exc)
 
     # === Mode 1: Vector Similarity (pgvector via Supabase RPC) ===
     if query_text:

@@ -43,6 +43,59 @@ def _format_idr(amount: Union[int, float, None]) -> str:
     return f"Rp{int(amount):,}".replace(",", ".")
 
 
+def _catalog_recommendation_reply(recommendations: List[Dict[str, Any]]) -> str:
+    """Balasan katalog berbasis data agar nama/harga/stok tidak dihalusinasi LLM."""
+    lines = []
+    for item in recommendations[:3]:
+        name = item.get("name", "Produk")
+        price = _format_idr(item.get("price"))
+        stock = item.get("stock")
+        unit = item.get("unit_label") or "unit"
+        stock_text = f" · stok {stock}" if stock is not None else ""
+        lines.append(f"• *{name}* — {price}/{unit}{stock_text}")
+    return (
+        "Siap, Kak. Ini pilihan yang benar-benar tersedia saat ini:\n\n"
+        + "\n".join(lines)
+        + "\n\nBalas nama produk yang ingin Kakak cek, atau langsung tulis jumlah dan harga tawaran. Saya bantu sampai checkout 😊"
+    )
+
+
+def _negotiation_reply(
+    context: Any, intent_result: Any, decision_type: str, final_price: Any, product_price: Any
+) -> str:
+    """Narasi negosiasi yang selalu mengikuti keputusan Sales Brain."""
+    product_name = _safe_get(context, "product_name", "produk ini")
+    quantity = max(int(_safe_get(_safe_get(intent_result, "entities", {}), "quantity", 1) or 1), 1)
+    normal = _format_idr(product_price)
+    approved = _format_idr(final_price)
+    decision = str(decision_type or "").lower()
+
+    if decision in {"discount", "counter_offer", "bonus"} and float(final_price or 0) < float(product_price or 0):
+        total = _format_idr(float(final_price) * quantity)
+        return (
+            f"Terima kasih sudah menawar, Kak 😊 Untuk *{product_name}*, saya bisa amankan "
+            f"harga terbaik *{approved}/unit* (total *{total}* untuk {quantity} unit), dari harga normal {normal}. "
+            "Kalau cocok, balas *checkout* ya—nanti saya siapkan pembayaran aman via QRIS/bank transfer."
+        )
+
+    return (
+        f"Saya paham Kak ingin harga yang lebih ringan 😊 Untuk *{product_name}*, tawaran tersebut belum bisa saya setujui "
+        f"karena harus tetap menjaga kualitas dan harga aman. Harga terbaik yang bisa saya bantu saat ini *{approved}/unit* "
+        f"(harga normal {normal}). Kalau cocok, saya siap proses checkout sekarang."
+    )
+
+
+def _contextual_acknowledgement_reply(context: Any) -> str:
+    """Jaga konteks saat pelanggan membalas singkat setelah diskusi produk."""
+    product_name = _safe_get(context, "product_name", "produk tadi")
+    price = _format_idr(_safe_get(context, "product_price", 0))
+    return (
+        f"Siap, Kak 😊 Untuk *{product_name}* harganya {price}. "
+        "Kalau sudah cocok, balas *checkout* atau tulis jumlah yang diinginkan; "
+        "kalau masih ingin menawar, sebutkan harga tawarannya ya."
+    )
+
+
 async def generate_sales_response(
     text: Optional[str] = None,
     prompt: Optional[str] = None,
@@ -62,7 +115,7 @@ async def generate_sales_response(
     """
     try:
         # 1. Ekstraksi Query Teks Pengguna
-        user_query = text or prompt or kwargs.get("contents") or ""
+        user_query = text or prompt or kwargs.get("user_message") or kwargs.get("contents") or ""
         if not user_query and intent_result:
             user_query = _safe_get(intent_result, "raw_text", "") or _safe_get(intent_result, "text", "")
         if not user_query and context:
@@ -70,9 +123,9 @@ async def generate_sales_response(
 
         # 2. Ekstraksi Context & Profil Pelanggan
         cust_name = _safe_get(context, "customer_name", "Kakak")
-        prod_name = _safe_get(context, "product_name", "Produk Kami")
-        prod_price = _safe_get(context, "product_price", 0.0)
-        stock_qty = _safe_get(context, "stock_qty", 0) # <--- TAMBAHKAN BARIS INI
+        prod_name = _safe_get(context, "product_name", kwargs.get("product_name", "Produk Kami"))
+        prod_price = _safe_get(context, "product_price", kwargs.get("product_price", 0.0))
+        stock_qty = _safe_get(context, "product_stock", kwargs.get("stock_qty", 0))
         
         # 3. Ekstraksi Intent
         intent_val = _safe_get(intent_result, "intent", "GREETING")
@@ -90,13 +143,19 @@ async def generate_sales_response(
 
         # 5. Ekstraksi Decision / Scoring Engine (Harga & Diskon)
         decision_obj = scoring_decision or decision_result
-        decision_type = _safe_get(decision_obj, "decision", "no_nego")
+        decision_type = (
+            _safe_get(decision_obj, "final_action", None)
+            or _safe_get(decision_obj, "decision", None)
+            or _safe_get(decision_obj, "action", "no_nego")
+        )
         if hasattr(decision_type, "value"):
             decision_type = decision_type.value
 
         final_price = _safe_get(decision_obj, "final_price", prod_price)
-        discount_amount = _safe_get(decision_obj, "discount_amount", 0.0)
-        reasoning = _safe_get(decision_obj, "reasoning", "")
+        discount_amount = _safe_get(decision_obj, "discount_amount", None)
+        if discount_amount is None:
+            discount_amount = max(0.0, float(prod_price or 0) - float(final_price or 0))
+        reasoning = _safe_get(decision_obj, "guard_reason", None) or _safe_get(decision_obj, "reasoning", "")
 
         # 6. Ekstraksi Rekomendasi Produk (RAG)
         recs = recommended_products or _safe_get(context, "recommended_products", [])
@@ -110,6 +169,21 @@ async def generate_sales_response(
                 rec_items.append(f"• *{r_name}* ({r_price}) - {r_desc}")
             if rec_items:
                 rec_text = "Rekomendasi Produk Tambahan:\n" + "\n".join(rec_items)
+
+        # Fakta katalog dan keputusan harga tidak boleh dibiarkan berubah oleh
+        # variasi LLM. Gemini tetap dipakai untuk dialog umum, tetapi dua jalur
+        # ini sengaja deterministik demi pengalaman belanja yang konsisten.
+        if str(intent_val).lower() == "rekomendasi" and recs:
+            return _catalog_recommendation_reply(recs)
+        if str(intent_val).lower() == "nego":
+            return _negotiation_reply(
+                context, intent_result, str(decision_type), final_price, prod_price
+            )
+        short_acknowledgements = {"oke", "ok", "ya", "yaudah", "yaudah deh", "baik", "sip", "setuju"}
+        if (
+            _normalise_message := " ".join(str(user_query).lower().strip().split())
+        ) in short_acknowledgements and _safe_get(context, "product_id", None):
+            return _contextual_acknowledgement_reply(context)
 
         # 7. Penyusunan System Instruction & Context Prompt
         base_sys = system_instruction or DEFAULT_SYSTEM_INSTRUCTION

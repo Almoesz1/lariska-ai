@@ -43,6 +43,7 @@ class ChainMock:
 
     def __init__(self, payload):
         self._payload = payload
+        self._update_data = None
 
     def select(self, *args, **kwargs):
         return self
@@ -63,13 +64,17 @@ class ChainMock:
         return self
 
     def update(self, *args, **kwargs):
+        self._update_data = args[0] if args else kwargs
         return self
 
     def execute(self):
         if isinstance(self._payload, Exception):
             raise self._payload
         result = MagicMock()
-        result.data = self._payload
+        if self._update_data and isinstance(self._payload, dict):
+            result.data = [{**self._payload, **self._update_data}]
+        else:
+            result.data = self._payload
         return result
 
 

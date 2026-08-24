@@ -202,20 +202,27 @@ class TestCreateOrder:
 
 class TestUpdateOrderStatus:
     def test_success_updates_status(self, client_factory, sample_order):
-        updated = {**sample_order, "status": "paid"}
-        client = client_factory(orders=[updated])
-        response = client.put(f"/dashboard/orders/{sample_order['id']}", json={"status": "paid"})
+        paid_order = {**sample_order, "status": "paid"}
+        client = client_factory(orders=paid_order)
+        response = client.put(f"/dashboard/orders/{sample_order['id']}", json={"status": "shipped"})
 
         assert response.status_code == 200
-        assert response.json()["status"] == "paid"
+        assert response.json()["status"] == "shipped"
 
     def test_not_found_returns_404(self, client_factory):
-        client = client_factory(orders=[])
+        client = client_factory(orders=None)
         response = client.put(
             "/dashboard/orders/33333333-3333-3333-3333-333333333333", json={"status": "paid"}
         )
 
         assert response.status_code == 404
+
+    def test_rejects_skipping_operational_stage(self, client_factory, sample_order):
+        client = client_factory(orders=sample_order)
+        response = client.put(f"/dashboard/orders/{sample_order['id']}", json={"status": "shipped"})
+
+        assert response.status_code == 409
+        assert "Transisi pending" in response.json()["detail"]
 
     def test_invalid_status_value_rejected(self, client_factory):
         """status dibatasi Literal sesuai CHECK constraint di schema.sql —

@@ -2,6 +2,7 @@
 LARISKA AI — Sales Brain API Router
 """
 
+import asyncio
 import logging
 from typing import Any, Dict
 from fastapi import APIRouter, status
@@ -36,7 +37,8 @@ def _to_dict(obj: Any) -> Dict[str, Any]:
     status_code=status.HTTP_200_OK,
     summary="Proses negosiasi pesan pembeli & hasilkan balasan sales otomatis",
 )
-def negotiate_sales(payload: NegotiateRequest) -> Dict[str, Any]:
+async def negotiate_sales(payload: NegotiateRequest) -> Dict[str, Any]:
+    dec_dict: Dict[str, Any] = {}
     try:
         # 1. Hitung Scoring Engine & Guardrails
         decision_res = run_scoring_engine(
@@ -52,12 +54,22 @@ def negotiate_sales(payload: NegotiateRequest) -> Dict[str, Any]:
         dec_dict = _to_dict(decision_res)
         emo_dict = _to_dict(emotion_res)
 
-        # 3. Generate Balasan Sales WhatsApp
-        reply = generate_sales_response(
-            decision_result=dec_dict,
-            product_name=payload.product_name,
-            emotion_info=emotion_res,
-            user_message=payload.user_message,
+        # 3. Generate Balasan Sales WhatsApp. Semua konteks komunikasi
+        # diteruskan eksplisit; pricing tetap dari decision_res di atas.
+        intent = _derive_demo_intent(payload.user_message, payload.features)
+        reply = await asyncio.wait_for(
+            generate_sales_response(
+                text=payload.user_message,
+                context={
+                    "product_name": payload.product_name,
+                    "product_price": payload.product_price,
+                    "stock_qty": payload.stock_qty,
+                },
+                intent_result={"intent": intent},
+                emotion_result=emotion_res,
+                decision_result=dec_dict,
+            ),
+            timeout=12,
         )
 
         # Ekstraksi atribut dengan aman tanpa takut None
@@ -113,21 +125,54 @@ def negotiate_sales(payload: NegotiateRequest) -> Dict[str, Any]:
 
     except Exception as e:
         logger.error(f"[SalesBrainAPI] Error: {e}", exc_info=True)
+        fallback_action = dec_dict.get("final_action", "hold_price")
+        fallback_price = float(dec_dict.get("final_price", payload.product_price))
+        fallback_price_text = f"Rp{fallback_price:,.0f}".replace(",", ".")
+        fallback_reason = dec_dict.get("guard_reason", "Respons bahasa sementara tidak tersedia.")
+        if fallback_action in {"counter_offer", "discount"}:
+            fallback_reply = (
+                f"Siap kak, untuk *{payload.product_name}* kami bisa bantu di harga terbaik "
+                f"*{fallback_price_text}*. Kalau cocok, saya bantu lanjutkan pesanannya ya."
+            )
+        else:
+            fallback_reply = (
+                f"Terima kasih kak. Untuk *{payload.product_name}*, harga terbaik yang aman saat ini "
+                f"*{fallback_price_text}*. Mau saya bantu lanjut checkout?"
+            )
         return {
-            "final_action": "REJECT",
-            "action": "REJECT",
-            "final_price": payload.product_price,
-            "floor_price_locked": True,
-            "guard_reason": f"System Fallback: {str(e)}",
-            "reasoning": f"System Fallback: {str(e)}",
-            "response_text": "Maaf kak, harga segitu belum bisa.",
-            "reply": "Maaf kak, harga segitu belum bisa.",
-            "message": "Maaf kak, harga segitu belum bisa.",
-            "suggested_reply": "Maaf kak, harga segitu belum bisa.",
-            "decision_result": {"status": "error"},
+            "final_action": fallback_action,
+            "action": fallback_action,
+            "final_price": fallback_price,
+            "floor_price_locked": bool(dec_dict.get("floor_price_locked", True)),
+            "guard_reason": fallback_reason,
+            "reasoning": fallback_reason,
+            "response_text": fallback_reply,
+            "reply": fallback_reply,
+            "message": fallback_reply,
+            "suggested_reply": fallback_reply,
+            "decision_result": dec_dict or {"status": "error"},
             "emotion_info": {
                 "emotion": "NEUTRAL",
                 "confidence": 1.0,
                 "tone_hint": "polite",
             },
         }
+
+
+def _derive_demo_intent(user_message: str, features: Dict[str, Any]) -> str:
+    """Menyediakan konteks bahasa untuk endpoint demo, bukan pricing logic.
+
+    WhatsApp production memakai NLU pipeline lengkap. Demo dashboard tidak
+    menyimpan ConversationContext, sehingga classifier ringan ini hanya
+    menentukan nada respons generator dan tidak bisa mengubah guardrail.
+    """
+    text = user_message.lower()
+    if float(features.get("discount_requested_pct", 0) or 0) > 0:
+        return "NEGO"
+    if any(token in text for token in ("stok", "ready", "tersedia")):
+        return "TANYA_STOK"
+    if any(token in text for token in ("detail", "bahan", "ukuran", "spesifikasi")):
+        return "TANYA_PRODUK"
+    if any(token in text for token in ("checkout", "beli", "ambil", "mau")):
+        return "CHECKOUT"
+    return "GREETING"

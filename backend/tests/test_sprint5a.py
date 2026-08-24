@@ -88,17 +88,17 @@ def test_sprint_5a():
     assert guarded["final_price"] >= context.product_floor_price
     assert guarded["floor_price_locked"] is True
 
-    fake_response = type("Response", (), {"text": "Harga terbaik sudah kami siapkan."})()
     emotion = EmotionResult(
         emotion=EmotionType.BURU_BURU,
         confidence=1.0,
         tone_hint="Jawab langsung ke inti.",
     )
-    with patch("app.pipeline.response_generator.generate_content", return_value=fake_response):
-        reply = generate_response(
-            context=context,
-            intent_result=intent,
-            emotion_result=emotion,
-            scoring_decision=decision,
-        )
-    assert reply == fake_response.text
+    reply = generate_response(
+        context=context,
+        intent_result=intent,
+        emotion_result=emotion,
+        scoring_decision=decision,
+    )
+    # Harga negosiasi harus berasal dari ScoringDecision, bukan variasi LLM.
+    assert f"Rp{decision.final_price:,.0f}/unit" in reply
+    assert "checkout" in reply.lower()

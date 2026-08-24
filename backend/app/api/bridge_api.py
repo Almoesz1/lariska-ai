@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 # Client Supabase
 from supabase import create_client, Client
+from app.core.config import settings
 
 # Import AI Sales Brain Pipeline & Gemini Audio Client
 from app.pipeline.sales_brain import (
@@ -31,8 +32,8 @@ router = APIRouter(prefix="/api/bridge", tags=["WA Bridge"])
 # ------------------------------------------------------------------------------
 # Inisialisasi Supabase Client
 # ------------------------------------------------------------------------------
-SUPABASE_URL = os.getenv("SUPABASE_URL", "")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY", os.getenv("SUPABASE_SERVICE_ROLE_KEY", ""))
+SUPABASE_URL = settings.supabase_url
+SUPABASE_KEY = settings.supabase_service_role_key
 
 if SUPABASE_URL and SUPABASE_KEY:
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)

@@ -43,7 +43,7 @@ from google.genai import types
 from pydantic import BaseModel
 
 from app.pipeline.gemini_client import generate_content
-from app.schemas.pipeline import EmotionResult, EmotionType
+from app.schemas.pipeline import EmotionResult, EmotionType, IntentType
 
 logger = logging.getLogger(__name__)
 
@@ -163,7 +163,7 @@ def _rule_based_fallback(text: str) -> EmotionResult:
     )
 
 
-def classify_emotion(text: str) -> EmotionResult:
+def classify_emotion(text: str, intent: IntentType | None = None) -> EmotionResult:
     """
     Klasifikasi emosi dari teks pesan pelanggan.
 
@@ -174,6 +174,16 @@ def classify_emotion(text: str) -> EmotionResult:
     3. Rule-based sendiri selalu punya default 'netral' di ujungnya, jadi
        fungsi ini dijamin selalu mengembalikan EmotionResult yang valid.
     """
+    # Negosiasi yang menyebut "mahal" atau "turunin" lazimnya bukan komplain
+    # dan tidak boleh berubah menjadi handover karena label emosi LLM yang
+    # terlalu agresif. Keputusan harga tetap diambil Sales Brain deterministik.
+    if intent == IntentType.NEGO:
+        return EmotionResult(
+            emotion=EmotionType.NETRAL,
+            confidence=0.9,
+            tone_hint="Balas empatik dan fokus pada nilai produk serta opsi harga yang sudah disetujui.",
+        )
+
     preview = f"{text[:60]}..." if len(text) > 60 else text
     logger.info(f"[Emotion] Classifying: '{preview}'")
 

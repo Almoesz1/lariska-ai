@@ -17,6 +17,7 @@ Sesuai Schema Database:
 """
 
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 from pydantic import BaseModel, Field
@@ -24,6 +25,7 @@ from supabase import Client
 
 from app.schemas.pipeline import (
     ConversationContext,
+    EmotionResult,
     IntentEntityResult,
     IntentType,
     EmotionType,
@@ -36,6 +38,17 @@ MAX_NEGOTIATION_ROUNDS = 5
 
 # Ambang batas kepercayaan intent model (0.0 - 1.0)
 MIN_CONFIDENCE_THRESHOLD = 0.60
+
+# Emosi marah tidak otomatis berarti handover. Pelanggan sering memakai
+# "gak jelas" untuk mengoreksi katalog/rekomendasi; Sales Brain harus
+# meminta maaf dan memperbaiki jawaban dulu. Handover dipakai untuk masalah
+# transaksi/produk yang material atau ancaman eskalasi.
+_SERIOUS_COMPLAINT_PATTERNS = (
+    "penipu", "penipuan", "tipu", "lapor polisi", "lapor konsumen",
+    "minta refund", "belum refund", "uang saya", "ganti rugi",
+    "barang rusak", "rusak parah", "barang cacat", "salah kirim",
+    "pesanan belum sampai", "barang belum sampai", "tidak sesuai pesanan",
+)
 
 
 class HandoverEvaluation(BaseModel):
@@ -54,6 +67,7 @@ class HandoverEvaluation(BaseModel):
 def evaluate_handover(
     intent_result: IntentEntityResult,
     context: ConversationContext,
+    emotion_result: Optional[EmotionResult] = None,
 ) -> HandoverEvaluation:
     """
     Evaluasi murni (pure function) untuk menentukan perlunya handover.
@@ -80,9 +94,24 @@ def evaluate_handover(
         else str(raw_intent or "")
     )
 
+    raw_text = (getattr(intent_result, "raw_text", "") or "").lower()
+    explicit_human_phrases = (
+        "admin", "cs", "customer service", "manusia", "orang asli",
+        "operator", "hubungkan", "bicara sama", "ngobrol sama",
+    )
+
+    # Kata pendek seperti "cs" harus cocok sebagai kata utuh. Pencarian
+    # substring membuat "5 pcs" keliru terbaca sebagai permintaan CS dan
+    # memutus negosiasi yang seharusnya masih ditangani Sales Brain.
+    def has_human_phrase(text: str) -> bool:
+        return any(
+            re.search(rf"(?<!\w){re.escape(phrase)}(?!\w)", text)
+            for phrase in explicit_human_phrases
+        )
     is_explicit_human_request = (
         raw_intent in human_intent_candidates
         or intent_val.lower() in ("human_agent", "handover", "talk_to_agent", "human", "admin", "cs_agent")
+        or has_human_phrase(raw_text)
     )
 
     if is_explicit_human_request:
@@ -93,10 +122,16 @@ def evaluate_handover(
             urgency_level="high",
         )
 
+    # Checkout adalah sinyal konversi yang eksplisit. Percakapan tidak boleh
+    # dialihkan ke admin hanya karena putaran nego sebelumnya sudah banyak;
+    # pelanggan harus langsung menerima invoice/link pembayaran.
+    if intent_val.lower() == IntentType.CHECKOUT.value:
+        return HandoverEvaluation(should_handover=False, reason=None, urgency_level="normal")
+
     # ---------------------------------------------------------------------
     # Rule 2: Sentimen Emosi Buruk (Marah / Frustrasi)
     # ---------------------------------------------------------------------
-    emotion_val = getattr(intent_result, "emotion", None)
+    emotion_val = getattr(emotion_result, "emotion", None)
     if emotion_val is not None:
         emotion_str = (
             emotion_val.value
@@ -104,13 +139,21 @@ def evaluate_handover(
             else str(emotion_val)
         ).lower()
 
-        if emotion_val in (EmotionType.FRUSTRATED, EmotionType.ANGRY) or emotion_str in ("frustrated", "angry"):
+        is_price_negotiation = intent_val.lower() == IntentType.NEGO.value
+        has_serious_complaint = any(pattern in raw_text for pattern in _SERIOUS_COMPLAINT_PATTERNS)
+        if (
+            (emotion_val == EmotionType.MARAH or emotion_str in ("marah", "frustrated", "angry"))
+            and not is_price_negotiation
+            and has_serious_complaint
+        ):
             logger.warning(f"[Handover] Triggered: Negative emotion detected ({emotion_val}).")
             return HandoverEvaluation(
                 should_handover=True,
                 reason=f"Terdeteksi emosi pelanggan {emotion_str.upper()} saat berinteraksi.",
-                urgency_level="critical" if (emotion_val == EmotionType.ANGRY or emotion_str == "angry") else "high",
+                urgency_level="critical" if emotion_str in ("marah", "angry") else "high",
             )
+        if (is_price_negotiation or not has_serious_complaint) and emotion_str in ("marah", "frustrated", "angry"):
+            logger.info("[Handover] Negative tone without critical issue; keep Sales Brain active for empathetic recovery.")
 
     # ---------------------------------------------------------------------
     # Rule 3: Negosiasi Deadlock (Sudah melampaui batas maksimum putaran)
