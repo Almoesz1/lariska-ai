@@ -61,23 +61,42 @@ Jika informasi produk belum cukup jelas atau ada beberapa kandidat katalog, LARI
 
 ## Menjalankan Lokal
 
-Prasyarat: Python 3.11+, Node.js 20+, akun Supabase, WhatsApp Cloud API, Google Gemini API, dan Midtrans Sandbox.
+Panduan ini sengaja memisahkan **jalur evaluasi inti** (Dashboard + Local End-to-End Demo) dari integrasi eksternal. Panitia dapat menjalankan dan memeriksa Sales Brain tanpa akun Meta atau nomor WhatsApp.
+
+### Prasyarat
+
+- Windows 10/11, Python **3.11+**, Node.js **20+**, dan Git.
+- Proyek Supabase untuk katalog serta transaksi.
+- Google Gemini API key untuk NLU. Artefak LightGBM sudah disertakan secara lokal.
+- Opsional: Midtrans Sandbox untuk invoice/pembayaran; Meta + ngrok hanya untuk membuktikan kanal WhatsApp live.
+
+### Bootstrap sekali saja
 
 ```powershell
-# Terminal 1 - backend
+git clone https://github.com/Almoesz1/lariska-ai.git
+cd lariska-ai
+
+# Database: jalankan berurutan di Supabase SQL Editor
+# backend/app/db/schema.sql
+# backend/app/db/seed.sql
+# backend/app/db/migrations/20260813_transactional_foundation.sql
+
+# Backend
+Copy-Item backend/.env.example backend/.env
 cd backend
-python -m venv .venv
+py -3.11 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
-```
+cd ..
 
-```powershell
-# Terminal 2 - frontend
+# Frontend
+Copy-Item frontend/.env.local.example frontend/.env.local
 cd frontend
 npm install
-npm run dev
+cd ..
 ```
+
+Isi kredensial Supabase dan Gemini milik evaluator pada `backend/.env`. Rahasia tidak disertakan dalam repository dan file `.env` tidak boleh di-commit. Untuk menjalankan Dashboard + Live Demo, minimal isi `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`/`SUPABASE_ANON_KEY`, dan `GEMINI_API_KEY`. Midtrans dan Meta tidak diperlukan untuk menguji katalog, konteks, voice transcription, LightGBM, atau floor-price guardrail.
 
 Frontend tersedia di `http://localhost:3000`, backend di `http://localhost:8000`, dan dokumentasi FastAPI di `http://localhost:8000/docs`.
 
@@ -159,6 +178,27 @@ maka URL yang harus ditempel adalah **persis** berikut (bukan URL dasar saja):
 
 > **Panitia tidak perlu mendaftarkan nomor WhatsApp pribadi ke Meta dan tidak perlu diberi token tim.** Jalur evaluasi yang direkomendasikan adalah dashboard lokal + Live Demo API. Integrasi WhatsApp live dibuktikan melalui Video Proof of Work dan dapat diuji langsung oleh panitia hanya bila tim secara sukarela menambahkan nomor penguji sebagai tester atau telah men-deploy aplikasi Meta dalam Live Mode.
 
+### Pilih jalur evaluasi
+
+| Jalur | Perlu Meta/test recipient? | Yang diuji | Rekomendasi |
+|---|---:|---|---|
+| **Dashboard + Local End-to-End Demo** | Tidak | katalog Supabase, konteks, Gemini NLU, emosi, Whisper, LightGBM, Python guardrail, checkout, dan invoice Midtrans bila dikonfigurasi | **Jalur utama panitia** |
+| WhatsApp Cloud API live | Ya, saat aplikasi masih Meta Development Mode | Inti yang sama melalui transport WhatsApp asli, webhook, dan status pesan | Bukti integrasi tambahan/video |
+
+**Mengapa ada Live Demo?** Meta membatasi nomor yang dapat mengirim pesan ke aplikasi yang belum Live/Production. Pembatasan ini berada pada platform Meta, bukan pada logika LARISKA. Karena itu Live Demo hanya mengganti **transport pesan**: input browser menggantikan webhook Meta, sedangkan Sales Brain di backend tetap dipakai.
+
+| Komponen | WhatsApp live | Local End-to-End Demo |
+|---|---|---|
+| Katalog, harga, floor price, stok | Supabase | **Supabase yang sama** |
+| Pemahaman pesan dan emosi | Gemini + classifier | **Pipeline yang sama** |
+| Voice input | media diunduh dari Meta | rekaman browser/file → **Whisper yang sama** |
+| Negosiasi | LightGBM + Python guardrail | **LightGBM + Python guardrail yang sama** |
+| Konteks, quote-lock, order, inventory | Supabase | **Supabase yang sama** |
+| Checkout/invoice | Midtrans Sandbox | **Midtrans Sandbox yang sama**, bila kredensial diisi |
+| Perbedaan | respons dikirim ke WhatsApp | respons/trace ditampilkan pada dashboard |
+
+Live Demo bukan mock chatbot atau keputusan harga di frontend. Ia adalah jalur evaluasi yang reproducible untuk inti produksi ketika nomor panitia tidak dapat atau tidak perlu didaftarkan ke Meta.
+
 ### 1. Dashboard dan Local End-to-End Demo — tidak memerlukan akun Meta
 
 Setelah backend dan frontend dijalankan, buka `http://localhost:3000/login`.
@@ -191,6 +231,18 @@ Pada halaman **Live Demo**, pilih produk aktif lalu lakukan urutan berikut:
 Apabila jaringan Midtrans Sandbox mengalami kegagalan sementara, payment client mencoba ulang hingga tiga kali dengan *backoff* singkat. Jika tetap gagal, reservation/order pending dibatalkan dan stok dilepas agar pelanggan dapat mencoba lagi tanpa risiko stok terkunci.
 
 Dengan demikian, Local End-to-End Demo **bukan** respons yang dihitung di browser atau mock chatbot. Ia mengganti transport Meta WhatsApp saja agar source code dapat dievaluasi secara reproducible.
+
+### Checklist uji panitia (±5 menit)
+
+Gunakan produk **Kopi Arabica** pada halaman Live Demo agar hasil mudah diperiksa.
+
+1. **Fakta katalog:** kirim `Jelaskan Kopi Arabica dan stoknya.` Pastikan nama, satuan, harga, spesifikasi, dan stok berasal dari kartu/DB.
+2. **Negosiasi aman:** kirim `Saya ambil 2, bisa Rp45.000?` Periksa trace keputusan dan pastikan harga akhir tidak berada di bawah floor price.
+3. **Konsistensi quote:** lanjutkan `Kalau lebih rendah lagi?` lalu `Kok harganya berubah?` Penawaran pada produk/jumlah sama tidak boleh menjadi lebih mahal; respons harus merujuk quote aktif.
+4. **Voice:** gunakan rekam browser atau unggah fixture audio. Pastikan transkripsi, intent, emosi, keputusan harga, dan respons tampil dari pipeline yang sama.
+5. **Checkout:** kirim `checkout`/`cekot`, lalu klik **Buat invoice pembayaran**. Pastikan order pending serta reservasi stok tercipta. Jika Midtrans Sandbox dan webhook publik dikonfigurasi, selesaikan pembayaran untuk melihat `payment success`, `order paid`, dan perubahan inventory.
+
+Jika evaluator tidak memasang Midtrans atau tunnel publik, langkah 1–4 tetap dapat diuji penuh. Langkah 5 berhenti pada batas yang transparan: invoice membutuhkan server key Midtrans, sedangkan perubahan status pembayaran membutuhkan webhook HTTPS yang dapat dijangkau Midtrans.
 
 ### 2. WhatsApp live — opsional untuk pengujian langsung
 
