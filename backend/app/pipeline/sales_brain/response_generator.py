@@ -179,6 +179,12 @@ async def generate_sales_response(
             return _negotiation_reply(
                 context, intent_result, str(decision_type), final_price, prod_price
             )
+        if str(intent_val).lower() == "checkout":
+            quantity = max(int(_safe_get(_safe_get(intent_result, "entities", {}), "quantity", 1) or 1), 1)
+            return (
+                f"Siap, Kak 😊 Saya siapkan invoice untuk *{quantity} {prod_name}*. "
+                "Tautan pembayaran resmi akan dikirim setelah invoice Midtrans berhasil dibuat."
+            )
         short_acknowledgements = {"oke", "ok", "ya", "yaudah", "yaudah deh", "baik", "sip", "setuju"}
         if (
             _normalise_message := " ".join(str(user_query).lower().strip().split())

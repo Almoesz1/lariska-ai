@@ -202,6 +202,8 @@ def transcribe_audio_bytes(
             mime = "audio/wav"
         elif suffix == ".mp3":
             mime = "audio/mp3"
+        elif suffix == ".webm":
+            mime = "audio/webm"
 
         cloud_text = _transcribe_via_gemini(audio_bytes, mime_type=mime)
         if cloud_text:

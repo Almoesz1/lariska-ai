@@ -467,6 +467,33 @@ def get_last_ai_decision(supabase: Client, conversation_id: str) -> Optional[str
     return None
 
 
+def get_last_negotiated_price_summary(
+    supabase: Client, conversation_id: str, product_id: Optional[str] = None
+) -> tuple[Optional[float], Optional[int]]:
+    """Ambil harga/unit dan quantity dari kesepakatan nego terakhir yang masih relevan."""
+    try:
+        query = (
+            supabase.table("negotiation_logs")
+            .select("ai_offer_price, ai_decision")
+            .eq("conversation_id", conversation_id)
+            .in_("ai_decision", ["discount", "counter_offer"])
+            .order("created_at", desc=True)
+            .limit(1)
+        )
+        if product_id:
+            query = query.eq("product_id", product_id)
+        result = query.execute()
+        row = (result.data or [None])[0]
+        if not row or row.get("ai_offer_price") is None:
+            return None, None
+        quantity = get_last_requested_quantity(supabase, conversation_id) or 1
+        total = float(row["ai_offer_price"])
+        return total / max(quantity, 1), quantity
+    except Exception as exc:
+        logger.warning(f"[StateTracking] Last negotiated price unavailable: {exc}")
+        return None, None
+
+
 # ============================================================
 # MAIN — Build ConversationContext (entry point dari webhook)
 # ============================================================
@@ -517,6 +544,9 @@ def build_context(
             last_decision = ScoringDecisionType(last_decision_raw)
         except ValueError:
             pass
+    last_negotiated_unit_price, last_negotiated_quantity = get_last_negotiated_price_summary(
+        supabase, conversation_id, product["id"] if product else None
+    )
 
     context = ConversationContext(
         conversation_id=conversation_id,
@@ -536,6 +566,8 @@ def build_context(
         product_specifications=product.get("specifications") or {} if product else {},
         negotiation_round=negotiation_round,
         last_ai_decision=last_decision,
+        last_negotiated_unit_price=last_negotiated_unit_price,
+        last_negotiated_quantity=last_negotiated_quantity,
     )
 
     logger.info(

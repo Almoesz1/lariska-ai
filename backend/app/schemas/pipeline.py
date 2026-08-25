@@ -183,3 +183,7 @@ class ConversationContext(BaseModel):
     # Riwayat negosiasi dalam sesi ini
     negotiation_round: int = Field(default=0, description="Putaran nego sesi ini")
     last_ai_decision: Optional[ScoringDecisionType] = None
+    # Memori harga hasil negosiasi terakhir; dipakai agar pertanyaan lanjutan
+    # seperti "kok malah naik?" tidak kembali menjawab harga katalog saja.
+    last_negotiated_unit_price: Optional[float] = None
+    last_negotiated_quantity: Optional[int] = None

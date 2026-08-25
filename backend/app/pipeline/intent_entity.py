@@ -58,7 +58,9 @@ PANDUAN INTENT:
 - nego: pelanggan menawar harga (ada kata 'boleh kurang', 'harga mati?', 'diskon', angka penawaran, dll)
 - tanya_stok: pelanggan bertanya apakah produk tersedia/ready/ukuran ready
 - komplain: pelanggan mengadukan masalah (produk rusak, pengiriman terlambat, dll)
-- checkout: pelanggan menyatakan mau beli / setuju dengan harga / minta invoice
+- checkout: pelanggan menyatakan mau beli / setuju dengan harga / minta invoice.
+  Variasi bahasa lisan/STT seperti "cekot", "cekout", "chekout", "mana linknya",
+  dan "lanjut bayar" juga berarti checkout jika konteks produk sudah ada.
 - tanya_produk: pelanggan bertanya detail produk (bahan, ukuran, warna, spesifikasi) atau mengoreksi/mengklarifikasi produk yang dimaksud
 - rekomendasi: pelanggan minta saran produk atau mencari produk tertentu
 - greeting: salam pembuka tanpa pertanyaan spesifik

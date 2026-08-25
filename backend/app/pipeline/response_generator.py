@@ -189,6 +189,16 @@ def _catalog_reply(context: ConversationContext, intent: IntentType) -> Optional
             return f"{name} masih ready, Kak—tersedia {stock} {unit}. Kalau cocok, saya juga bisa bantu cek harga atau siapkan pesanannya."
         return f"Maaf Kak, {name} sedang habis. Saya bisa bantu carikan alternatif yang tersedia ya."
     if intent == IntentType.TANYA_HARGA:
+        negotiated_unit = getattr(context, "last_negotiated_unit_price", None)
+        negotiated_quantity = getattr(context, "last_negotiated_quantity", None)
+        if negotiated_unit and negotiated_quantity:
+            negotiated_total = float(negotiated_unit) * int(negotiated_quantity)
+            return (
+                f"Betul, Kak—supaya tidak membingungkan: penawaran terakhir yang masih saya pegang "
+                f"adalah Rp{negotiated_unit:,.0f}/unit, total Rp{negotiated_total:,.0f} untuk "
+                f"{negotiated_quantity} unit *{name}*. Harga katalog normalnya Rp{float(context.product_price or 0):,.0f}/unit. "
+                "Kalau penawaran ini cocok, balas *checkout* ya."
+            )
         return f"Harga {name} saat ini Rp{float(context.product_price or 0):,.0f} per {unit}. Stok tersedia {stock} {unit}. Kalau ambil lebih dari satu, boleh sampaikan jumlahnya ya, Kak."
 
     specs = context.product_specifications or {}
@@ -231,10 +241,21 @@ def _negotiation_reply(
     final_price = float(decision.final_price or normal_price)
     total = final_price * quantity
 
+    # Harga bundle dapat menghasilkan pecahan per unit (contoh Rp65.000/3).
+    # Jadikan total sebagai nominal utama agar pembulatan tampilan tidak
+    # terlihat seperti harga berubah saat pelanggan menghitung ulang sendiri.
+    if quantity > 1 and abs(final_price - round(final_price)) > 0.001:
+        quote_display = (
+            f"total *Rp{total:,.0f}* untuk {quantity} unit "
+            f"(setara sekitar Rp{final_price:,.0f}/unit)"
+        )
+    else:
+        quote_display = f"*Rp{final_price:,.0f}/unit*—total *Rp{total:,.0f}* untuk {quantity} unit"
+
     if decision.decision in (ScoringDecisionType.DISCOUNT, ScoringDecisionType.COUNTER_OFFER):
         return (
             f"Terima kasih sudah menawar, Kak 😊 Untuk *{product_name}*, harga terbaik yang bisa saya amankan "
-            f"adalah *Rp{final_price:,.0f}/unit*—total *Rp{total:,.0f}* untuk {quantity} unit. "
+            f"adalah {quote_display}. "
             "Kalau cocok, balas *checkout* ya; saya siapkan pembayaran QRIS/bank transfer."
         )
 
@@ -256,6 +277,47 @@ def _contextual_acknowledgement_reply(context: ConversationContext) -> str:
         f"Siap, Kak 😊 Untuk *{context.product_name or 'produk tadi'}* harganya "
         f"Rp{float(context.product_price or 0):,.0f}/unit. Kalau cocok, balas *checkout* atau tulis jumlahnya; "
         "kalau masih ingin menawar, sebutkan nominalnya ya."
+    )
+
+
+def _complaint_reply(context: ConversationContext) -> str:
+    """Jawaban keluhan yang terikat ke sumber harga terakhir, bukan LLM."""
+    name = context.product_name or "produk tadi"
+    unit_price = getattr(context, "last_negotiated_unit_price", None)
+    quantity = getattr(context, "last_negotiated_quantity", None)
+    if unit_price and quantity:
+        total = float(unit_price) * int(quantity)
+        if int(quantity) > 1 and abs(float(unit_price) - round(float(unit_price))) > 0.001:
+            quote_display = (
+                f"total *Rp{total:,.0f}* untuk {quantity} unit "
+                f"(setara sekitar Rp{float(unit_price):,.0f}/unit)"
+            )
+        else:
+            quote_display = f"*Rp{float(unit_price):,.0f}/unit*, total *Rp{total:,.0f}* untuk {quantity} unit"
+        return (
+            f"Maaf, Kak—Kakak benar untuk meminta kejelasan. Penawaran aktif untuk *{name}* "
+            f"tetap {quote_display}. "
+            "Saya tidak akan menaikkan penawaran itu dalam percakapan ini. Kalau setuju, balas *checkout* ya."
+        )
+    return (
+        f"Maaf atas kebingungannya, Kak. Saya akan cek ulang informasi *{name}* dari katalog dan "
+        "memberikan satu harga yang konsisten. Boleh tulis jumlah yang ingin diambil atau nominal penawarannya?"
+    )
+
+
+def _checkout_reply(context: ConversationContext, intent_result: IntentEntityResult) -> str:
+    """Jawaban checkout tanpa tautan fiktif dari LLM.
+
+    Tautan hanya boleh muncul setelah Midtrans benar-benar membuat invoice di
+    checkout engine. Jalur WhatsApp lalu mengirim CTA asli; Local Demo membuka
+    aksi invoice yang sama sesudah intent checkout terbaca.
+    """
+    quantity = max(int(intent_result.entities.quantity or 1), 1)
+    if not context.product_name:
+        return "Siap, Kak. Sebutkan dulu produk dan jumlah yang ingin dipesan, nanti saya siapkan invoice pembayarannya."
+    return (
+        f"Siap, Kak 😊 Saya siapkan invoice untuk *{quantity} {context.product_name}*. "
+        "Sebentar ya, saya buatkan tautan pembayaran resmi supaya pesanan dan stok tercatat dengan aman."
     )
 
 
@@ -281,9 +343,17 @@ def generate_response(
     """
     # Harga, total, dan keputusan negosiasi adalah data bisnis. Respons untuk
     # jalur ini harus deterministik agar Gemini tidak dapat menyebut angka lain.
+    if intent_result.intent == IntentType.CHECKOUT:
+        logger.info("[ResponseGenerator] Mengirim jawaban checkout deterministik.")
+        return _checkout_reply(context, intent_result)
+
     if intent_result.intent == IntentType.NEGO and scoring_decision:
         logger.info("[ResponseGenerator] Mengirim jawaban negosiasi deterministik.")
         return _negotiation_reply(context, intent_result, scoring_decision)
+
+    if intent_result.intent == IntentType.KOMPLAIN:
+        logger.info("[ResponseGenerator] Mengirim respons komplain yang konsisten dengan quote aktif.")
+        return _complaint_reply(context)
 
     if intent_result.intent == IntentType.REKOMENDASI:
         recommendation_reply = _recommendation_reply(recommended_products or [])

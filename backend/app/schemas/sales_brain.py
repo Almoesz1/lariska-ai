@@ -2,7 +2,7 @@
 LARISKA AI — Sales Brain Schemas
 """
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 from pydantic import BaseModel, Field
 
 
@@ -38,3 +38,24 @@ class NegotiateResponse(BaseModel):
     suggested_reply: str
     decision_result: Dict[str, Any]
     emotion_info: EmotionDetail
+
+
+class DemoMessageRequest(BaseModel):
+    """Input Local End-to-End Demo.
+
+    Harga, floor price, dan stok sengaja tidak diterima dari browser. Seluruh
+    nilai bisnis dibaca ulang dari katalog Supabase pada server, identik dengan
+    jalur WhatsApp dan aman dari manipulasi payload demo.
+    """
+    session_id: str = Field(..., min_length=8, max_length=80)
+    product_id: str = Field(..., min_length=8)
+    user_message: str = Field(..., min_length=1, max_length=2000)
+
+
+class DemoCheckoutRequest(BaseModel):
+    """Permintaan invoice dari Local End-to-End Demo."""
+    session_id: str = Field(..., min_length=8, max_length=80)
+    product_id: str = Field(..., min_length=8)
+    # Bila tidak dikirim, quantity dipulihkan dari pesan/negosiasi terakhir
+    # sesi tersebut. Browser tidak boleh diam-diam memaksa kembali ke 1 unit.
+    quantity: Optional[int] = Field(default=None, ge=1, le=100)

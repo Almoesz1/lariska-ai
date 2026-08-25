@@ -244,6 +244,61 @@ def _enforce_deterministic_negotiation_intent(intent_result: Any, context: Any, 
     )
 
 
+def _enforce_deterministic_checkout_intent(intent_result: Any, context: Any, text: str) -> None:
+    """Tangani variasi ejaan/lisan checkout tanpa mengandalkan tebakan LLM.
+
+    Whisper dan penulisan kasual sering menghasilkan ``cekot``, ``cekout``,
+    atau "mana linknya". Jika produk sudah terikat pada konteks yang valid,
+    sinyal eksplisit itu aman diterjemahkan ke CHECKOUT; harga tetap dihitung
+    ulang dari order/negotiation log, bukan dari teks pelanggan.
+    """
+    if not getattr(context, "product_id", None):
+        return
+    # Berbeda dari normalisasi pencarian katalog, spasi perlu dipertahankan
+    # agar frasa seperti "mana linknya" dan "mau bayar" dapat dideteksi.
+    normalized = re.sub(r"[^a-z0-9]+", " ", str(text).lower()).strip()
+    checkout_patterns = (
+        r"\bcheck\s*out\b", r"\bcek\s*out\b", r"\bcekot\b", r"\bchekout\b",
+        r"\bjadi beli\b", r"\blanjut (?:bayar|pesan)\b", r"\bmau bayar\b",
+        r"\bmana (?:link|invoice|pembayaran)\b", r"\blinknya mana\b",
+    )
+    if any(re.search(pattern, normalized) for pattern in checkout_patterns):
+        intent_result.intent = IntentType.CHECKOUT
+        logger.info("[WhatsAppWebhook] Deterministic checkout detected for product=%s", getattr(context, "product_name", None))
+
+
+def _repair_contextual_intent(intent_result: Any, context: Any, text: str) -> None:
+    """Pulihkan intent percakapan pendek dengan konteks produk yang sudah valid.
+
+    Hanya memperbaiki intent lemah (lainnya/greeting/rekomendasi) dan tidak
+    pernah mengganti NEGO/CHECKOUT yang telah dikunci. Ini mengatasi hasil STT
+    atau NLU seperti "masih ada?", "berapa jadinya?", dan "mau beli kopi"
+    tanpa membuat produk/harga baru dari asumsi model.
+    """
+    if not getattr(context, "product_id", None):
+        return
+    if getattr(intent_result, "intent", None) in (IntentType.NEGO, IntentType.CHECKOUT):
+        return
+    normalized = re.sub(r"[^a-z0-9]+", " ", str(text).lower()).strip()
+    # Keluhan setelah penawaran tidak boleh dikirim ke Gemini sebagai respons
+    # umum. Dengan konteks produk yang sama, jawabannya harus merujuk pada
+    # quote aktif agar pelanggan tidak menerima harga yang saling bertentangan.
+    if any(token in normalized for token in (
+        "gajelas", "ga jelas", "tidak jelas", "kok malah", "malah naik",
+        "kasih kejelasan", "gimana sih", "bingung",
+    )):
+        intent_result.intent = IntentType.KOMPLAIN
+    elif any(token in normalized for token in ("stok", "ready", "tersedia", "masih ada", "habis")):
+        intent_result.intent = IntentType.TANYA_STOK
+    elif any(token in normalized for token in ("berapa", "harga", "harganya", "total", "jadi berapa", "berapa jadi")):
+        intent_result.intent = IntentType.TANYA_HARGA
+    elif any(token in normalized for token in ("detail", "spesifikasi", "bahan", "ukuran", "rasa", "cocok", "mau beli", "ingin beli")):
+        intent_result.intent = IntentType.TANYA_PRODUK
+    else:
+        return
+    logger.info("[WhatsAppWebhook] Contextual intent repaired to %s for product=%s", intent_result.intent.value, context.product_name)
+
+
 def _build_scoring_decision(
     context: Any, 
     intent_result: Any, 
@@ -312,6 +367,45 @@ def _build_scoring_decision(
         product_price=product_price,
         floor_price=floor_price,
     )
+
+    # Quote-lock: untuk produk dan jumlah yang sama, counter-offer baru tidak
+    # pernah boleh lebih mahal daripada quote terakhir yang sudah diterima
+    # pelanggan. Ini mengatasi percakapan berulang/STT yang sebelumnya dapat
+    # menghitung ulang model dan membuat total penawaran terlihat naik.
+    prior_unit_price = float(getattr(context, "last_negotiated_unit_price", 0.0) or 0.0)
+    prior_quantity = int(getattr(context, "last_negotiated_quantity", 0) or 0)
+    candidate_price = float(raw.get("final_price", product_price) or product_price)
+    if (
+        prior_unit_price > 0
+        and prior_quantity == quantity
+        and candidate_price > prior_unit_price
+    ):
+        retained_discount = max((product_price - prior_unit_price) / product_price, 0.0)
+        raw.update({
+            "final_action": "counter_offer",
+            "final_price": prior_unit_price,
+            "applied_discount_pct": retained_discount,
+            "floor_price_locked": prior_unit_price <= floor_price,
+            "guard_reason": "Active quote retained: a later negotiation may not worsen the prior quote.",
+        })
+
+    # Minat bundle tanpa menyebut nominal tetap merupakan peluang penjualan.
+    # LightGBM tidak menerima nilai diskon yang bermakna pada kondisi ini
+    # (discount_requested_pct=0), sehingga kebijakan paket kecil dibuat di
+    # lapisan Python setelah model: transparan, konsisten, dan selalu dibatasi
+    # oleh ruang floor price. Ini bukan keputusan LLM.
+    if offered_price is None and quantity >= 2 and int(getattr(context, "product_stock", 0) or 0) >= quantity:
+        available_discount = max((product_price - floor_price) / product_price, 0.0)
+        bundle_discount = min(0.04, available_discount)
+        if bundle_discount > 0 and raw.get("final_action") == "hold_price":
+            bundle_price = max(product_price * (1.0 - bundle_discount), floor_price)
+            raw.update({
+                "final_action": "counter_offer",
+                "final_price": bundle_price,
+                "applied_discount_pct": bundle_discount,
+                "floor_price_locked": bundle_price <= floor_price,
+                "guard_reason": "Bundle interest: deterministic 4% package offer within floor-price guardrail.",
+            })
     
     final_price = float(raw.get("final_price", product_price))
     return ScoringDecision(
@@ -644,6 +738,8 @@ async def _handle_single_message(message: Dict[str, Any], contact: Dict[str, Any
         # pricing engine, walau classifier bahasa sedang membaca kalimatnya
         # sebagai pertanyaan umum. Ini menjaga harga dan narasi konsisten.
         _enforce_deterministic_negotiation_intent(intent_result, context, text)
+        _enforce_deterministic_checkout_intent(intent_result, context, text)
+        _repair_contextual_intent(intent_result, context, text)
 
         # Sync nama kontak jika diperbarui di profil WA
         if customer_name and getattr(context, "customer_name", None) != customer_name:

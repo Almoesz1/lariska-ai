@@ -10,6 +10,8 @@ Referensi proposal Bab 5 Tier 1: Invoice + QRIS Sandbox
 """
 
 import logging
+import random
+import time
 from typing import Any, Dict, Optional
 
 import midtransclient
@@ -132,20 +134,34 @@ def create_qris_payment(
         f"[PaymentClient] Membuat QRIS untuk order {midtrans_order_id}, amount=Rp{amount_int:,}"
     )
 
-    try:
-        transaction = snap.create_transaction(param)
-        redirect_url = transaction.get("redirect_url")
-        result = {
-            "token": transaction.get("token"),
-            "redirect_url": redirect_url,
-            "payment_url": redirect_url,
-            "midtrans_order_id": midtrans_order_id,
-        }
-        logger.info(f"[PaymentClient] QRIS berhasil dibuat: {redirect_url}")
-        return result
-    except Exception as exc:
-        logger.error(f"[PaymentClient] Midtrans error: {exc}")
-        raise RuntimeError(f"Gagal membuat transaksi QRIS: {exc}") from exc
+    last_error: Exception | None = None
+    for attempt in range(1, 4):
+        try:
+            transaction = snap.create_transaction(param)
+            redirect_url = transaction.get("redirect_url")
+            if not redirect_url:
+                raise RuntimeError("Midtrans tidak mengembalikan redirect_url.")
+            result = {
+                "token": transaction.get("token"),
+                "redirect_url": redirect_url,
+                "payment_url": redirect_url,
+                "midtrans_order_id": midtrans_order_id,
+            }
+            logger.info(f"[PaymentClient] QRIS berhasil dibuat: {redirect_url}")
+            return result
+        except Exception as exc:
+            last_error = exc
+            message = str(exc).lower()
+            transient = any(marker in message for marker in (
+                "connection", "timeout", "temporar", "503", "502", "429", "socket",
+            ))
+            if not transient or attempt == 3:
+                break
+            delay = (0.6 * (2 ** (attempt - 1))) + random.uniform(0.0, 0.25)
+            logger.warning("[PaymentClient] Midtrans attempt %s/3 failed; retry in %.2fs: %s", attempt, delay, exc)
+            time.sleep(delay)
+    logger.error(f"[PaymentClient] Midtrans error after retry: {last_error}")
+    raise RuntimeError(f"Gagal membuat transaksi QRIS: {last_error}") from last_error
 
 
 def check_transaction_status(midtrans_order_id: str) -> Dict[str, Any]:
