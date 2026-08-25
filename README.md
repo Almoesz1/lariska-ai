@@ -118,6 +118,24 @@ ngrok http 8000
 
 Salin URL HTTPS yang ditampilkan, misalnya `https://nama-acak.ngrok-free.dev`. URL berubah setiap kali ngrok free dihentikan/dijalankan ulang; setiap perubahan URL harus diperbarui di Meta dan Midtrans.
 
+#### Contoh URL tunnel aktif
+
+Jika terminal ngrok menampilkan:
+
+```text
+Forwarding  https://ravioli-turf-cradling.ngrok-free.dev -> http://localhost:8000
+```
+
+maka URL yang harus ditempel adalah **persis** berikut (bukan URL dasar saja):
+
+| Pengaturan | Nilai yang ditempel |
+|---|---|
+| Meta Callback URL | `https://ravioli-turf-cradling.ngrok-free.dev/api/whatsapp/webhook` |
+| Midtrans Payment Notification URL | `https://ravioli-turf-cradling.ngrok-free.dev/api/payment/webhook` |
+| Inspeksi request ngrok di komputer lokal | `http://127.0.0.1:4040` |
+
+> URL `ravioli-turf-cradling.ngrok-free.dev` di atas hanya contoh dari sesi aktif tim. Jika ngrok direstart dan URL Forwarding berubah, ganti kedua URL webhook tersebut segera sebelum menguji WhatsApp atau pembayaran.
+
 | Layanan | URL yang diisi | Tujuan |
 |---|---|---|
 | Meta WhatsApp Cloud API | `https://<ngrok-domain>/api/whatsapp/webhook` | menerima pesan, voice note, dan status delivery WhatsApp |
